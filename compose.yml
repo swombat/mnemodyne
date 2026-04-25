@@ -1,0 +1,74 @@
+# Production docker-compose for mnemos.
+#
+# Single-being deployment: one app container, one Postgres container with
+# pgvector, one volume for database state, one bind mount for backups.
+#
+# Quick start on a fresh Ubuntu box (after `git clone` + setting .env):
+#   cp .env.example .env
+#   edit .env (set AUTH_TOKEN, OPENAI_API_KEY or other provider key)
+#   docker compose up -d
+#
+# Migrations run automatically on app boot via bin/docker-entrypoint.
+
+services:
+  app:
+    build: .
+    image: mnemos:latest
+    container_name: mnemos-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      RAILS_ENV: production
+      RAILS_LOG_TO_STDOUT: "true"
+      RAILS_MASTER_KEY: ${RAILS_MASTER_KEY:?Set RAILS_MASTER_KEY in .env}
+      AUTH_TOKEN: ${AUTH_TOKEN:?Set AUTH_TOKEN in .env}
+
+      # Database
+      DATABASE_HOST: db
+      DATABASE_PORT: 5432
+      DATABASE_USERNAME: mnemos
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      DATABASE_URL: postgres://mnemos:${POSTGRES_PASSWORD}@db:5432/mnemos_production
+
+      # Embedding provider — pick one and set the matching key
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
+      EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-1024}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-large}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-gemini-embedding-001}
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
+      VOYAGE_EMBEDDING_MODEL: ${VOYAGE_EMBEDDING_MODEL:-voyage-3}
+      EMBEDDING_SIDECAR_URL: ${EMBEDDING_SIDECAR_URL:-}
+
+      # Decay parameters (see DecaySweep)
+      DECAY_RATE: ${DECAY_RATE:-0.005}
+      CHARGE_DECAY_RATE: ${CHARGE_DECAY_RATE:-0.001}
+      CHARGE_DECAY_FLOOR: ${CHARGE_DECAY_FLOOR:-0.1}
+
+      # Solid Queue worker concurrency
+      SOLID_QUEUE_IN_PUMA: "true"
+    ports:
+      - "${MNEMOS_PORT:-3000}:80"
+
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: mnemos-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mnemos
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: mnemos_production
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mnemos -d mnemos_production"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:

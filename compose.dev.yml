@@ -1,0 +1,25 @@
+# Development-only compose file: just Postgres+pgvector for the Rails app
+# to connect to from the host. Use compose.yml for the full production stack.
+#
+# Usage: docker compose -f compose.dev.yml up -d
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: mnemos-dev-db
+    environment:
+      POSTGRES_USER: mnemos
+      POSTGRES_PASSWORD: mnemos_dev
+      POSTGRES_DB: mnemos_development
+    ports:
+      - "5433:5432"  # 5433 to avoid clashing with any local postgres
+    volumes:
+      - mnemos_dev_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mnemos"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  mnemos_dev_pgdata:
