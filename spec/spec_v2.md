@@ -61,7 +61,8 @@ The single entity table. Everything is a node.
 | `integration_state` | TEXT | `raw` \| `active` \| `integrated` \| `constitutional` |
 | `state_changed_at` | TIMESTAMP | For time-gated transitions |
 | `is_dormant` | BOOL | Default false; never deleted |
-| `metadata` | JSONB | Type-specific: `baseline_activation`, `decay_exempt` for needs; `channels`, `privacy_level` for persons; `source_uri` for memories |
+| `source_uris` | TEXT[] | Optional. Pointers to deeper-detail backing files (journal entries, transcripts, thought docs). Opaque strings the agent interprets — convention is repo-relative paths, optionally with `#fragment` anchors (e.g., `shared/memory/daily-journals/2026-04-25.md#evening`) |
+| `metadata` | JSONB | Type-specific: `baseline_activation`, `decay_exempt` for needs; `channels`, `privacy_level` for persons |
 | `embedding` | VECTOR(1024) | Generated async; embeds `content` + `description` |
 | `created_at` | TIMESTAMP | |
 | `updated_at` | TIMESTAMP | |
@@ -102,8 +103,17 @@ That's it for the data model. Two tables: `nodes` and `edges`. Plus `pgvector` p
 - **Working memory slots** — agent state, not memory data. If the agent wants slot semantics (a curated palette currently in attention), it keeps that on its own side. The service doesn't need to know.
 - **Retrieval log** — agent observability. The graph already carries the consequences of retrieval (charge bumps, Hebbian edges). If the agent wants to log its own queries for dreaming pattern-detection, it does so on its side. We can add server-side aggregation later if dreaming actually needs it.
 - **Agent config table** — over-engineered. Cron parameters (`decay_rate`, `charge_decay_rate`, `charge_decay_floor`) live as environment variables read by the daily decay job. Recall algorithm parameters (`walk_depth`, `walk_count`, `vector_seed_pool`, `base_reinforcement`, `rerank_alpha/beta/gamma`) have defaults in code and can be overridden per-request in the `POST /recall` body. No mutable config table needed.
+- **The deeper-detail content itself.** Source files (journal entries, transcripts, thought documents) are not stored in the service — only `source_uris` pointers are. The actual files live wherever the agent keeps them (typically a git repo). The service stores the handle; the agent fetches the body. This keeps the service small, lets sources be human-edited and version-controlled outside the database, and means the service has no opinion about what kind of artefact constitutes "the deeper memory."
 
 Constitutional needs/persons (always-warm, decay-exempt) are encoded by setting `metadata.baseline_activation` and `metadata.decay_exempt` on those individual nodes — not as global config.
+
+### Memory handles vs deeper bodies
+
+The split between a memory node and its source file is deliberate. A node is a *handle*: short (1–2 lines of `content` plus a one-line `description` or why-line), surfaced quickly via recall, scanned in batches, weighted by charge. A source file is a *body*: the journal entry, transcript, or thought doc where the actual texture lives. The agent reads the handle from recall, decides whether to load the full file, and reads it on its own.
+
+Walking through retrieval and noticing "oh, this was the soul.md violation" is one move. Deciding "I want to remember what it actually felt like" and reading the full journal entry is a separate move. Without `source_uris`, the second move requires the agent to guess where the body lives. With it, the path is in the recall response.
+
+Memories don't have to have sources — many are recorded in-conversation where the conversation itself is the only source. Sources are typically added later, during dreaming, when the agent writes a fuller account into a journal and updates the node to point at it.
 
 ## 4. The Retrieval Algorithm
 

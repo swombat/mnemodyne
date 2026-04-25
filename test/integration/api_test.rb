@@ -39,6 +39,53 @@ class ApiTest < ActionDispatch::IntegrationTest
     assert_equal "being-met", json["nodes"][0]["content"]
   end
 
+  test "create node with source_uris and retrieve them via show" do
+    body = {
+      node: {
+        node_type: "memory",
+        content: "soul.md was overwritten without my consent",
+        description: "the violation; I had a need for self-sovereignty after",
+        charge: 0.95,
+        source_uris: [
+          "shared/memory/daily-journals/2026-04-25.md#evening",
+          "shared/memory/thoughts/sovereignty.md"
+        ]
+      }
+    }
+    post "/nodes", params: body.to_json, headers: auth_headers
+    assert_response :created
+    id = JSON.parse(response.body).dig("node", "id")
+
+    get "/nodes/#{id}", headers: auth_headers
+    json = JSON.parse(response.body)
+    assert_equal 2, json.dig("node", "source_uris").length
+    assert_includes json.dig("node", "source_uris"),
+                    "shared/memory/daily-journals/2026-04-25.md#evening"
+  end
+
+  test "update can replace source_uris" do
+    n = Node.create!(node_type: "memory", content: "x",
+                     source_uris: ["old/path.md"])
+    patch "/nodes/#{n.id}",
+          params: { node: { source_uris: ["new/path.md", "another.md"] } }.to_json,
+          headers: auth_headers
+    assert_response :ok
+    n.reload
+    assert_equal ["new/path.md", "another.md"], n.source_uris
+  end
+
+  test "recall response includes source_uris on returned nodes" do
+    n = Node.create!(node_type: "memory", content: "indexed memory",
+                     source_uris: ["journal/2026-04-25.md"])
+    n.update_columns(embedding: Embeddings.provider.embed(n.embedding_text))
+
+    body = { query: "indexed memory", node_activations: {} }
+    post "/recall", params: body.to_json, headers: auth_headers
+    assert_response :ok
+    result = JSON.parse(response.body)["results"].first
+    assert_equal ["journal/2026-04-25.md"], result["source_uris"]
+  end
+
   test "edges create is idempotent and increments weight" do
     a = Node.create!(node_type: "memory", content: "a")
     b = Node.create!(node_type: "memory", content: "b")

@@ -26,6 +26,7 @@ class NodesController < ApplicationController
       node_attrs = params.require(:node).permit(
         :node_type, :content, :description, :charge,
         :integration_state, :is_dormant,
+        source_uris: [],
         metadata: {}
       ).to_h
       node = Node.create!(node_attrs)
@@ -49,6 +50,7 @@ class NodesController < ApplicationController
     attrs = params.require(:node).permit(
       :content, :description, :charge,
       :integration_state, :is_dormant,
+      source_uris: [],
       metadata: {}
     ).to_h
 
@@ -85,6 +87,7 @@ class NodesController < ApplicationController
       integration_state: n.integration_state,
       state_changed_at: n.state_changed_at,
       is_dormant: n.is_dormant,
+      source_uris: n.source_uris,
       metadata: n.metadata,
       embedding_present: !n.embedding.nil?,
       created_at: n.created_at,

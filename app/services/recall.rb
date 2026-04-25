@@ -216,6 +216,7 @@ class Recall
       description: n.description,
       charge: n.charge,
       integration_state: n.integration_state,
+      source_uris: n.source_uris,
       metadata: n.metadata,
       vector_similarity: r[:vector_similarity].round(4),
       alignment: r[:alignment].round(4),

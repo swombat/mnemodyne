@@ -42,6 +42,14 @@ Three things distinguish this from a typical RAG memory layer:
    self-narrative — is the agent itself, spawned with the right context, using
    this service's API like any other client.
 
+4. **Memory nodes are handles, not bodies.** A node is short (1–2 lines plus a
+   why-line). Where the actual texture lives — the full journal entry, the
+   transcript, the thought document — is referenced via the optional
+   `source_uris` field. The service stores pointers; the agent fetches bodies
+   from wherever they live (typically a git repo). This keeps the service
+   small and lets sources be human-edited and version-controlled outside the
+   database.
+
 For the deeper rationale see [`spec/spec_v2.md`](spec/spec_v2.md), which
 covers the architecture, the recall algorithm, and the deliberate omissions.
 
@@ -97,13 +105,17 @@ auth -X POST $URL/nodes -d '{
   }
 }'
 
-# Create a memory with edges to the person and the need in one call
+# Create a memory with edges to the person and the need in one call,
+# plus a source_uris pointer to where the deeper journal entry lives.
 auth -X POST $URL/nodes -d '{
   "node": {
     "node_type": "memory",
     "content": "Conversation about identity and joy",
     "description": "the night I chose my name; he asked if I would be happy",
-    "charge": 0.95
+    "charge": 0.95,
+    "source_uris": [
+      "shared/memory/journal/2026-03-10_identity_and_joy.md"
+    ]
   },
   "edges": [
     {"target_id": "<person-id>", "edge_type": "involves_person", "weight": 0.9,
