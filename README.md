@@ -186,14 +186,52 @@ provider).
 Default target: a small VPS with Docker (Hetzner, Linode, anything that runs
 Docker Engine). Single bearer token auth, single being per deployment.
 
-Backups via host-side cron:
+### Option A — `docker compose` (the simple path)
+
+Edit `.env` and `docker compose up -d`. That's it.
+
+### Option B — Kamal 2
+
+A `config/deploy.yml` is included for [Kamal](https://kamal-deploy.org/)
+deployments. Suitable if you already host other small apps on a single VPS
+and want SSL termination, build caching, and zero-downtime restarts handled
+for you.
+
+Before first deploy, create the credential files referenced by `.kamal/secrets`:
+
+```
+config/credentials/deployment/
+  kamal_password.key      # Docker Hub password for your registry user
+  postgres_pw_prod.key    # openssl rand -hex 24
+  auth_token_prod.key     # openssl rand -hex 32 — bearer token your agent uses
+  voyage_api.key          # (or swap for openai/gemini if you change provider)
+```
+
+Edit `config/deploy.yml`: set `service`, `image`, `registry.username`,
+`servers.web.hosts`, `proxy.host`, `accessories.postgres.host`, and
+`builder.remote` to your own values. The shipped file targets the host
+`mnemos.granttree.co.uk` and the registry user `dtenner` — replace these.
+
+Then:
 
 ```bash
-docker exec mnemos-db pg_dump -U mnemos mnemos_production \
+kamal setup        # first time only
+kamal deploy       # subsequent deploys
+curl https://<your-host>/up   # → 200, no auth
+```
+
+The Postgres accessory uses `pgvector/pgvector:pg16`; the `enable_extensions`
+migration creates the `vector` extension on first boot.
+
+### Backups
+
+```bash
+docker exec mnemos-postgres pg_dump -U mnemos mnemos_production \
   | gzip > backups/mnemos-$(date +%F).sql.gz
 ```
 
-Restore: `gunzip -c backup.sql.gz | docker exec -i mnemos-db psql -U mnemos mnemos_production`.
+(Container name is `mnemos-postgres` under Kamal, `mnemos-db` under compose —
+adjust accordingly.) Restore: `gunzip -c backup.sql.gz | docker exec -i <container> psql -U mnemos mnemos_production`.
 
 ## What this isn't
 

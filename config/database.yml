@@ -25,19 +25,11 @@ test:
   database: mnemos_test
 
 production:
-  primary: &primary_production
-    <<: *default
-    url: <%= ENV["DATABASE_URL"] %>
-    database: mnemos_production
-  cache:
-    <<: *primary_production
-    database: mnemos_production_cache
-    migrations_paths: db/cache_migrate
-  queue:
-    <<: *primary_production
-    database: mnemos_production_queue
-    migrations_paths: db/queue_migrate
-  cable:
-    <<: *primary_production
-    database: mnemos_production_cable
-    migrations_paths: db/cable_migrate
+  <<: *default
+  url: <%= ENV["DATABASE_URL"] %>
+  database: mnemos_production
+  # Single primary database. Solid Queue tables live alongside the application
+  # tables — loaded from db/queue_schema.rb by bin/docker-entrypoint on first
+  # boot. Solid Cache/Cable aren't used (api_only app, no ActionCable, no heavy
+  # caching), so they're not provisioned. Keep this simple while the service
+  # is single-being / low-volume.

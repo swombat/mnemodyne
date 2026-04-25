@@ -1,8 +1,23 @@
 #!/bin/bash -e
 
-# If running the rails server then create or migrate existing database
+# If running the rails server then create or migrate existing database,
+# and ensure the Solid Queue schema is loaded into the primary database.
 if [ "${@: -2:1}" == "./bin/rails" ] && [ "${@: -1:1}" == "server" ]; then
   ./bin/rails db:prepare
+
+  # Load db/queue_schema.rb into the primary DB if solid_queue tables are
+  # not yet present. Idempotent — safe on every boot. Mirrors bin/setup's
+  # dev-time logic so production single-DB has the queue tables it needs.
+  ./bin/rails runner '
+    ActiveRecord::Base.connection.instance_variable_set(
+      :@schema_migration,
+      ActiveRecord::SchemaMigration.new(ActiveRecord::Base.connection_pool)
+    )
+    unless ActiveRecord::Base.connection.tables.include?("solid_queue_jobs")
+      load(Rails.root.join("db/queue_schema.rb"))
+      puts "  solid_queue tables loaded"
+    end
+  '
 fi
 
 exec "${@}"

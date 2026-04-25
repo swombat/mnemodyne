@@ -1,0 +1,87 @@
+# Kamal 2 deploy config for mnemos.
+#
+# Target: misc Hetzner box at 95.217.118.47 (same host that runs Ghost, HelixKit,
+# and other small apps). One web container, one Postgres accessory with pgvector.
+# Solid Queue runs in-process inside Puma (SOLID_QUEUE_IN_PUMA=true), so there
+# is no separate jobs container to keep alive — the daily DecaySweepJob fires
+# from the web instance.
+#
+# Before first deploy:
+#   1. Create config/credentials/deployment/ and populate the *.key files
+#      listed in .kamal/secrets.
+#   2. Point the DNS record (mnemos.granttree.co.uk) at 95.217.118.47.
+#   3. Run `kamal setup` from this repo on a machine with Docker.
+#
+# After deploy, smoke-test with:
+#   curl https://mnemos.granttree.co.uk/up           # → 200 (no auth)
+#   curl -H "Authorization: Bearer $TOKEN" https://mnemos.granttree.co.uk/stats
+
+service: mnemos
+image: dtenner/mnemos
+
+registry:
+  username: dtenner
+  password:
+    - KAMAL_REGISTRY_PASSWORD
+
+ssh:
+  user: swombat
+  port: 12222
+
+env:
+  clear:
+    RAILS_SERVE_STATIC_FILES: true
+    RAILS_LOG_TO_STDOUT: true
+    RAILS_ENV: production
+    SOLID_QUEUE_IN_PUMA: true
+
+    # Embedding provider — voyage-3 is the default (1024 dim).
+    EMBEDDING_PROVIDER: voyage
+    EMBEDDING_DIMENSION: 1024
+    VOYAGE_EMBEDDING_MODEL: voyage-3
+
+    # Decay parameters (the only autonomous service behaviour, fires daily 3am).
+    DECAY_RATE: "0.005"
+    CHARGE_DECAY_RATE: "0.001"
+    CHARGE_DECAY_FLOOR: "0.1"
+
+  secret:
+    - RAILS_MASTER_KEY
+    - DATABASE_URL
+    - AUTH_TOKEN
+    - VOYAGE_API_KEY
+
+servers:
+  web:
+    hosts:
+      - 95.217.118.47
+
+proxy:
+  ssl: true
+  host: mnemos.granttree.co.uk
+  app_port: 80
+
+builder:
+  arch: amd64
+  remote: ssh://swombat@95.217.118.47:12222
+  args:
+    RAILS_ENV: production
+  cache:
+    type: registry
+    options: mode=max
+    image: dtenner/mnemos:production-build-cache
+
+accessories:
+  postgres:
+    # pgvector/pgvector:pg16 ships pgvector pre-installed; mnemos's enable_extensions
+    # migration creates the extension on first boot.
+    image: pgvector/pgvector:pg16
+    host: 95.217.118.47
+    env:
+      clear:
+        POSTGRES_USER: mnemos
+        POSTGRES_DB: mnemos_production
+      secret:
+        - POSTGRES_PASSWORD
+    directories:
+      - data:/var/lib/postgresql/data

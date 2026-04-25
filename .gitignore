@@ -30,6 +30,7 @@
 
 # Ignore key files for decrypting credentials and more.
 /config/*.key
+/config/credentials/deployment/
 
 # Re-include the example env file
 !/.env.example
