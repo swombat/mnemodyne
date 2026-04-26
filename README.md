@@ -210,7 +210,7 @@ config/credentials/deployment/
 Edit `config/deploy.yml`: set `service`, `image`, `registry.username`,
 `servers.web.hosts`, `proxy.host`, `accessories.postgres.host`, and
 `builder.remote` to your own values. The shipped file targets the host
-`mnemos.granttree.co.uk` and the registry user `dtenner` — replace these.
+`mnemos-lume.swombat.io` and the registry user `dtenner` — replace these.
 
 Then:
 

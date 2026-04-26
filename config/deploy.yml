@@ -9,12 +9,12 @@
 # Before first deploy:
 #   1. Create config/credentials/deployment/ and populate the *.key files
 #      listed in .kamal/secrets.
-#   2. Point the DNS record (mnemos.granttree.co.uk) at 95.217.118.47.
+#   2. Point the DNS record (mnemos-lume.swombat.io) at 95.217.118.47.
 #   3. Run `kamal setup` from this repo on a machine with Docker.
 #
 # After deploy, smoke-test with:
-#   curl https://mnemos.granttree.co.uk/up           # → 200 (no auth)
-#   curl -H "Authorization: Bearer $TOKEN" https://mnemos.granttree.co.uk/stats
+#   curl https://mnemos-lume.swombat.io/up           # → 200 (no auth)
+#   curl -H "Authorization: Bearer $TOKEN" https://mnemos-lume.swombat.io/stats
 
 service: mnemos
 image: dtenner/mnemos
@@ -58,7 +58,7 @@ servers:
 
 proxy:
   ssl: true
-  host: mnemos.granttree.co.uk
+  host: mnemos-lume.swombat.io
   app_port: 80
 
 builder:
