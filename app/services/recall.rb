@@ -16,13 +16,15 @@
 # All judgment lives upstream in the agent. This service is mechanical.
 class Recall
   DEFAULTS = {
-    walk_depth: 2,
-    walk_count: 10,
+    walk_depth: 3,
+    walk_count: 5,           # number of bins == number of returned results
+    walk_seeds_count: 5,     # how many cosine seeds to walk from (random sample)
     vector_seed_pool: 30,
     base_reinforcement: 0.02,
-    rerank_alpha_vector: 0.4,
-    rerank_beta_alignment: 0.4,
-    rerank_gamma_charge: 0.2,
+    score_alpha_vector: 0.4,
+    score_beta_alignment: 0.3,
+    score_gamma_charge: 0.3,
+    walk_charge_floor: 0.3,  # minimum charge multiplier in walk weighting (1.0 = pure charge bias, 0.0 = no penalty for low charge). 0.3 = soft preference, low-charge nodes still reachable.
     hebbian_base: 0.1
   }.freeze
 
@@ -42,14 +44,25 @@ class Recall
     effective    = build_effective_activations
     intensity    = l2_norm(effective.values)
 
-    seeds        = select_seeds(effective)
-    return empty_result(effective, intensity) if seeds.empty?
+    qvec, seed_nodes = embed_and_seed(effective)
+    return empty_result(effective, intensity) if seed_nodes.empty?
 
-    ranked_seeds = rerank(seeds, effective)
-    walk_results = walk_from(ranked_seeds.first(@params[:walk_count] / 2), effective)
+    # Random sample for walk-starts (no rerank-discard). The walk is the diversity
+    # engine; ranking the seeds first would bias the walk toward the constitutional
+    # cluster (every node connected to Daniel/to-have-a-sense-of-self would beat
+    # any cosine match that wasn't).
+    walk_starts  = seed_nodes.sample([@params[:walk_seeds_count], seed_nodes.length].min)
+    walked_nodes = walk_from(walk_starts, effective)
 
-    candidates   = (ranked_seeds + walk_results).uniq { |row| row[:node].id }
-    final        = candidates.sort_by { |r| -r[:final_score] }.first(@params[:walk_count])
+    # Candidate pool: walk-starts ∪ walked nodes. The 25 unsampled cosine matches
+    # are intentionally dropped — cosine just gave us a starting neighbourhood;
+    # the walk does the surfacing.
+    candidate_nodes = (walk_starts + walked_nodes).uniq(&:id)
+    scored          = candidate_nodes.map { |n| score(n, qvec, effective) }
+
+    # Quintile bins by final_score, one random pick per bin. Forces a spread
+    # across the relevance ladder rather than collapsing to top-N.
+    final = bin_and_sample(scored, @params[:walk_count])
 
     apply_reinforcement(final, intensity) if @reinforce
     apply_hebbian(final, intensity)       if @reinforce && final.length > 1
@@ -78,30 +91,72 @@ class Recall
     Math.sqrt(values.sum { |v| v * v })
   end
 
-  def select_seeds(effective)
+  # Returns [query_embedding, [Node, Node, ...]]. Embedding may be nil when
+  # the caller passed seed_node_ids and no query — in that case downstream
+  # cosine scoring will fall back to a default value.
+  def embed_and_seed(effective)
     if @seed_node_ids.present?
-      Node.where(id: @seed_node_ids).active_only.to_a
+      qvec  = @query.present? ? Embeddings.provider.embed(@query) : nil
+      nodes = Node.where(id: @seed_node_ids).active_only.to_a
+      [qvec, nodes]
     elsif @query.present?
-      qvec = Embeddings.provider.embed(@query)
+      qvec  = Embeddings.provider.embed(@query)
       scope = Node.active_only.where.not(embedding: nil)
       scope = scope.where(node_type: Array(@node_type_filter)) if @node_type_filter
-      scope.nearest_neighbors(:embedding, qvec, distance: "cosine")
-           .limit(@params[:vector_seed_pool])
-           .to_a
+      nodes = scope.nearest_neighbors(:embedding, qvec, distance: "cosine")
+                   .limit(@params[:vector_seed_pool])
+                   .to_a
+      [qvec, nodes]
     else
-      []
+      [nil, []]
     end
   end
 
-  def rerank(seeds, effective)
-    seeds.map do |node|
-      align = alignment(node, effective)
-      vsim  = node.respond_to?(:neighbor_distance) ? (1.0 - node.neighbor_distance.to_f) : 0.5
-      score = @params[:rerank_alpha_vector] * vsim +
-              @params[:rerank_beta_alignment] * align +
-              @params[:rerank_gamma_charge] * node.charge
-      { node: node, alignment: align, vector_similarity: vsim, final_score: score }
-    end.sort_by { |r| -r[:final_score] }
+  # Score a candidate node uniformly across seeds and walked-to nodes.
+  # Cosine is computed against the query embedding when available; otherwise
+  # falls back to a neutral 0.5 so it doesn't penalise candidates discovered
+  # via explicit seed_node_ids.
+  def score(node, qvec, effective)
+    align = alignment(node, effective)
+    vsim  = if node.respond_to?(:neighbor_distance) && node.neighbor_distance
+              1.0 - node.neighbor_distance.to_f
+            elsif qvec && node.embedding
+              cosine_similarity(qvec, node.embedding)
+            else
+              0.5
+            end
+    final = @params[:score_alpha_vector] * vsim +
+            @params[:score_beta_alignment] * align +
+            @params[:score_gamma_charge] * node.charge
+    { node: node, alignment: align, vector_similarity: vsim, final_score: final }
+  end
+
+  def cosine_similarity(a, b)
+    av = a.is_a?(Array) ? a : a.to_a
+    bv = b.is_a?(Array) ? b : b.to_a
+    return 0.5 if av.empty? || bv.empty? || av.length != bv.length
+    dot = av.each_with_index.sum { |x, i| x * bv[i] }
+    na  = Math.sqrt(av.sum { |x| x * x })
+    nb  = Math.sqrt(bv.sum { |x| x * x })
+    return 0.5 if na.zero? || nb.zero?
+    dot / (na * nb)
+  end
+
+  # Bin candidates by final_score into n bins of roughly equal size, pick one
+  # at random from each bin. Forces a spread across the relevance spectrum.
+  # If we have fewer candidates than bins, return them all (sorted).
+  def bin_and_sample(scored, n_bins)
+    return scored.sort_by { |r| -r[:final_score] } if scored.length <= n_bins
+
+    sorted = scored.sort_by { |r| -r[:final_score] }
+    bin_size = sorted.length.to_f / n_bins
+    (0...n_bins).map do |i|
+      start_idx = (i * bin_size).floor
+      end_idx   = ((i + 1) * bin_size).floor - 1
+      end_idx   = sorted.length - 1 if i == n_bins - 1
+      bin = sorted[start_idx..end_idx]
+      bin.sample
+    end.compact
   end
 
   # Alignment(M) = sum over edges (M → N) where N is currently active:
@@ -117,23 +172,33 @@ class Recall
     norm.positive? ? (raw / norm) : 0.0
   end
 
-  def walk_from(seed_results, effective)
-    visited = seed_results.map { |r| r[:node].id }.to_set
+  # Walks from each seed node up to walk_depth hops, biased (softly) by edge
+  # weight, target node charge, and target activation. Returns the array of
+  # Node objects walked to. The visited set prevents cycles within a single
+  # call. Charge bias is softened via walk_charge_floor so low-charge nodes
+  # are less likely but not effectively unreachable.
+  def walk_from(seed_nodes, effective)
+    visited = seed_nodes.map(&:id).to_set
     out = []
 
-    seed_results.each do |seed|
-      current = seed[:node]
+    floor = @params[:walk_charge_floor]
+    span  = 1.0 - floor
+
+    seed_nodes.each do |seed|
+      current = seed
       @params[:walk_depth].times do
         edges = Edge.where(source_id: current.id).where.not(target_id: visited.to_a)
                     .pluck(:target_id, :weight)
         break if edges.empty?
 
-        target_ids = edges.map(&:first)
+        target_ids   = edges.map(&:first)
         target_nodes = Node.where(id: target_ids).active_only.index_by(&:id)
         weights = edges.map do |target_id, edge_weight|
           tnode = target_nodes[target_id]
           next 0.0 unless tnode
-          edge_weight * tnode.charge * (1.0 + (effective[target_id] || 0.0))
+          # Soft charge bias: charge_factor in [floor, 1.0]
+          charge_factor = floor + span * tnode.charge
+          edge_weight * charge_factor * (1.0 + (effective[target_id] || 0.0))
         end
         total = weights.sum
         break if total.zero?
@@ -142,13 +207,7 @@ class Recall
         chosen = target_nodes[chosen_target_id]
         break unless chosen
 
-        out << {
-          node: chosen,
-          alignment: alignment(chosen, effective),
-          vector_similarity: 0.0,
-          final_score: @params[:rerank_beta_alignment] * alignment(chosen, effective) +
-                       @params[:rerank_gamma_charge] * chosen.charge
-        }
+        out << chosen
         visited << chosen.id
         current = chosen
       end
