@@ -1,4 +1,4 @@
-# Kamal 2 deploy config for mnemos.
+# Kamal 2 deploy config for mnemodyne (renamed from mnemos 2026-05-04).
 #
 # Target: misc Hetzner box at 95.217.118.47 (same host that runs Ghost, HelixKit,
 # and other small apps). One web container, one Postgres accessory with pgvector.
@@ -6,18 +6,23 @@
 # is no separate jobs container to keep alive — the daily DecaySweepJob fires
 # from the web instance.
 #
+# NOTE on the rename: `service:` and the postgres accessory's POSTGRES_USER /
+# POSTGRES_DB are kept as `mnemos` to preserve the Kamal data-volume continuity
+# and avoid a live DB migration. Internal artifacts only — externally everything
+# is mnemodyne.
+#
 # Before first deploy:
 #   1. Create config/credentials/deployment/ and populate the *.key files
 #      listed in .kamal/secrets.
-#   2. Point the DNS record (mnemos-lume.swombat.io) at 95.217.118.47.
+#   2. Point the DNS record (mnemodyne-lume.swombat.io) at 95.217.118.47.
 #   3. Run `kamal setup` from this repo on a machine with Docker.
 #
 # After deploy, smoke-test with:
-#   curl https://mnemos-lume.swombat.io/up           # → 200 (no auth)
-#   curl -H "Authorization: Bearer $TOKEN" https://mnemos-lume.swombat.io/stats
+#   curl https://mnemodyne-lume.swombat.io/up           # → 200 (no auth)
+#   curl -H "Authorization: Bearer $TOKEN" https://mnemodyne-lume.swombat.io/stats
 
-service: mnemos
-image: dtenner/mnemos
+service: mnemos  # internal Kamal id retained; see NOTE above
+image: dtenner/mnemodyne
 
 registry:
   username: dtenner
@@ -58,7 +63,7 @@ servers:
 
 proxy:
   ssl: true
-  host: mnemos-lume.swombat.io
+  host: mnemodyne-lume.swombat.io
   app_port: 80
 
 builder:
@@ -69,11 +74,11 @@ builder:
   cache:
     type: registry
     options: mode=max
-    image: dtenner/mnemos:production-build-cache
+    image: dtenner/mnemodyne:production-build-cache
 
 accessories:
   postgres:
-    # pgvector/pgvector:pg16 ships pgvector pre-installed; mnemos's enable_extensions
+    # pgvector/pgvector:pg16 ships pgvector pre-installed; mnemodyne's enable_extensions
     # migration creates the extension on first boot.
     image: pgvector/pgvector:pg16
     host: 95.217.118.47

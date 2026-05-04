@@ -1,4 +1,4 @@
-# Production docker-compose for mnemos.
+# Production docker-compose for mnemodyne (formerly mnemos, renamed 2026-05-04).
 #
 # Single-being deployment: one app container, one Postgres container with
 # pgvector, one volume for database state, one bind mount for backups.
@@ -9,12 +9,15 @@
 #   docker compose up -d
 #
 # Migrations run automatically on app boot via bin/docker-entrypoint.
+#
+# NOTE: DB user/db name kept as `mnemos` / `mnemos_production` — renaming
+# them would require a live data migration. Internal artifact only.
 
 services:
   app:
     build: .
-    image: mnemos:latest
-    container_name: mnemos-app
+    image: mnemodyne:latest
+    container_name: mnemodyne-app
     restart: unless-stopped
     depends_on:
       db:
@@ -51,11 +54,11 @@ services:
       # Solid Queue worker concurrency
       SOLID_QUEUE_IN_PUMA: "true"
     ports:
-      - "${MNEMOS_PORT:-3000}:80"
+      - "${MNEMODYNE_PORT:-3000}:80"
 
   db:
     image: pgvector/pgvector:pg16
-    container_name: mnemos-db
+    container_name: mnemodyne-db
     restart: unless-stopped
     environment:
       POSTGRES_USER: mnemos

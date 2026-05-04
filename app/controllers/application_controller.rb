@@ -10,7 +10,7 @@ class ApplicationController < ActionController::API
   def authenticate_request
     expected = ENV.fetch("AUTH_TOKEN", nil)
     if expected.blank?
-      Rails.logger.warn "[mnemos] AUTH_TOKEN not set; refusing all requests."
+      Rails.logger.warn "[mnemodyne] AUTH_TOKEN not set; refusing all requests."
       render json: { error: "server_misconfigured" }, status: :service_unavailable
       return
     end

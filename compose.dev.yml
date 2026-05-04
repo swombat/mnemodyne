@@ -6,7 +6,7 @@
 services:
   db:
     image: pgvector/pgvector:pg16
-    container_name: mnemos-dev-db
+    container_name: mnemodyne-dev-db
     environment:
       POSTGRES_USER: mnemos
       POSTGRES_PASSWORD: mnemos_dev

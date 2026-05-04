@@ -1,4 +1,4 @@
-# PostgreSQL configuration for Mnemos.
+# PostgreSQL configuration for Mnemodyne.
 #
 # Development and test point at the dockerized pgvector instance from
 # compose.dev.yml (host port 5433). Override with DATABASE_URL in any
@@ -6,6 +6,10 @@
 #
 # Production uses the standard Rails 8 multi-DB setup (primary + solid_*
 # auxiliaries), each driven by its own *_DATABASE_URL env var.
+#
+# NOTE: DB user/db names retained as `mnemos` / `mnemos_*` from before the
+# 2026-05-04 mnemos→mnemodyne rename — internal artifact, not externally
+# visible. Renaming would require a live data migration.
 
 default: &default
   adapter: postgresql

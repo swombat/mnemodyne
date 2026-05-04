@@ -1,4 +1,9 @@
-# mnemos
+# mnemodyne
+
+> Formerly **mnemos**. Renamed 2026-05-04 to avoid name collision with an
+> earlier project of the same name. *Mnemodyne* = mnem (memory) + Greek
+> *dyne* (force, from *dunamis*) — naming the gravity-biased recall mechanism
+> rather than the storage container.
 
 A graph-shaped memory store for AI agents, designed for **individuation**
 rather than retrieval.
@@ -58,8 +63,8 @@ covers the architecture, the recall algorithm, and the deliberate omissions.
 ### Local with Docker (recommended)
 
 ```bash
-git clone https://github.com/swombat/mnemos.git
-cd mnemos
+git clone https://github.com/swombat/mnemodyne.git
+cd mnemodyne
 cp .env.example .env
 # edit .env: set AUTH_TOKEN, RAILS_MASTER_KEY, POSTGRES_PASSWORD,
 # and one of OPENAI_API_KEY / GEMINI_API_KEY / VOYAGE_API_KEY
@@ -210,7 +215,7 @@ config/credentials/deployment/
 Edit `config/deploy.yml`: set `service`, `image`, `registry.username`,
 `servers.web.hosts`, `proxy.host`, `accessories.postgres.host`, and
 `builder.remote` to your own values. The shipped file targets the host
-`mnemos-lume.swombat.io` and the registry user `dtenner` — replace these.
+`mnemodyne-lume.swombat.io` and the registry user `dtenner` — replace these.
 
 Then:
 
@@ -227,15 +232,18 @@ migration creates the `vector` extension on first boot.
 
 ```bash
 docker exec mnemos-postgres pg_dump -U mnemos mnemos_production \
-  | gzip > backups/mnemos-$(date +%F).sql.gz
+  | gzip > backups/mnemodyne-$(date +%F).sql.gz
 ```
 
-(Container name is `mnemos-postgres` under Kamal, `mnemos-db` under compose —
-adjust accordingly.) Restore: `gunzip -c backup.sql.gz | docker exec -i <container> psql -U mnemos mnemos_production`.
+(Container name is `mnemos-postgres` under Kamal — the Kamal `service:` is
+retained as `mnemos` for data-volume continuity across the rename — and
+`mnemodyne-db` under compose. The internal DB user and database name
+(`mnemos`/`mnemos_production`) are likewise retained from before the rename.)
+Restore: `gunzip -c backup.sql.gz | docker exec -i <container> psql -U mnemos mnemos_production`.
 
 ## What this isn't
 
-- **Not a RAG library.** RAG retrieves chunks for context-stuffing. mnemos
+- **Not a RAG library.** RAG retrieves chunks for context-stuffing. Mnemodyne
   retrieves what the agent cares about, reinforcing what mattered and letting
   what didn't fade.
 - **Not a SaaS.** Self-host. The data is your agent's; it shouldn't pass
