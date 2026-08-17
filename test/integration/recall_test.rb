@@ -53,6 +53,71 @@ class RecallTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "string-valued numeric params are coerced, not crashed on" do
+    body = {
+      query: "anything",
+      node_activations: {},
+      reinforce: false,
+      walk_depth: "3",
+      rerank_alpha_vector: "0.0",
+      rerank_beta_alignment: "0.0",
+      rerank_gamma_charge: "1.0"
+    }
+
+    post "/recall", params: body.to_json, headers: auth_headers
+    assert_response :ok
+    json = JSON.parse(response.body)
+
+    assert_operator json["results"].length, :>, 0
+    json["results"].each do |result|
+      assert_in_delta result["charge"], result["final_score"], 0.0001,
+                      "string weights should coerce to charge-only scoring for node #{result["id"]}"
+    end
+  end
+
+  test "garbage numeric params fall back to defaults instead of 500ing or zeroing weights" do
+    body = {
+      query: "anything",
+      node_activations: {},
+      reinforce: false,
+      walk_depth: "banana",
+      rerank_alpha_vector: "not-a-number",
+      rerank_gamma_charge: [1.0]
+    }
+
+    post "/recall", params: body.to_json, headers: auth_headers
+    assert_response :ok
+    json = JSON.parse(response.body)
+    assert_operator json["results"].length, :>, 0
+
+    # Defaults applied (alpha 0.4 / beta 0.3 / gamma 0.3), NOT alpha silently
+    # zeroed by "not-a-number".to_f — under defaults final_score blends vector
+    # similarity and alignment, so it should not collapse to charge alone for
+    # every result.
+    collapsed = json["results"].all? { |r| (r["final_score"] - r["charge"]).abs < 0.0001 }
+    refute collapsed, "garbage weights must fall back to blended default scoring"
+  end
+
+  test "string 'false' for reinforce is treated as false, not truthy" do
+    body = {
+      query: "being seen",
+      node_activations: { @daniel.id => 0.85, @being_met.id => 0.9 },
+      reinforce: "false"
+    }
+
+    charges_before = Node.pluck(:id, :charge).to_h
+    post "/recall", params: body.to_json, headers: auth_headers
+    assert_response :ok
+    json = JSON.parse(response.body)
+
+    json["results"].each do |result|
+      assert_nil result["applied_reinforcement"],
+                 "reinforce: \"false\" must not reinforce node #{result["id"]}"
+    end
+    assert_equal charges_before, Node.pluck(:id, :charge).to_h,
+                 "no node charge may change when reinforce is the string \"false\""
+  end
+
   test "charged recall reinforces aligned nodes more than unaligned ones" do
     body = {
       query: "being seen",

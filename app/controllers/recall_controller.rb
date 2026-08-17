@@ -5,14 +5,14 @@ class RecallController < ApplicationController
       node_activations: params[:node_activations]&.to_unsafe_h,
       seed_node_ids: params[:seed_node_ids],
       node_type_filter: params[:node_type_filter],
-      reinforce: params.key?(:reinforce) ? params[:reinforce] : true,
-      walk_depth: params[:walk_depth],
-      walk_count: params[:walk_count],
-      vector_seed_pool: params[:vector_seed_pool],
-      base_reinforcement: params[:base_reinforcement],
-      score_alpha_vector: params[:rerank_alpha_vector],
-      score_beta_alignment: params[:rerank_beta_alignment],
-      score_gamma_charge: params[:rerank_gamma_charge]
+      reinforce: bool_param(:reinforce, default: true),
+      walk_depth: int_param(:walk_depth),
+      walk_count: int_param(:walk_count),
+      vector_seed_pool: int_param(:vector_seed_pool),
+      base_reinforcement: float_param(:base_reinforcement),
+      score_alpha_vector: float_param(:rerank_alpha_vector),
+      score_beta_alignment: float_param(:rerank_beta_alignment),
+      score_gamma_charge: float_param(:rerank_gamma_charge)
     ).call
 
     render json: result
@@ -29,11 +29,36 @@ class RecallController < ApplicationController
     result = Recall.new(
       seed_node_ids: seed_ids,
       node_activations: params[:node_activations]&.to_unsafe_h&.merge(node.id => 1.0),
-      reinforce: params.key?(:reinforce) ? params[:reinforce] : true,
-      walk_depth: params[:walk_depth],
-      walk_count: params[:walk_count]
+      reinforce: bool_param(:reinforce, default: true),
+      walk_depth: int_param(:walk_depth),
+      walk_count: int_param(:walk_count)
     ).call
 
     render json: result
+  end
+
+  private
+
+  # Numeric params may arrive as JSON numbers or as strings (form-encoded
+  # clients, sloppy callers). Coerce valid values; turn garbage into nil so
+  # Recall's `overrides.compact` falls back to DEFAULTS instead of the
+  # request 500ing mid-arithmetic — and instead of `"banana".to_f` silently
+  # zeroing a scoring weight.
+  def float_param(key)
+    Float(params[key], exception: false)
+  end
+
+  def int_param(key)
+    Integer(params[key], exception: false)
+  end
+
+  # `reinforce: "false"` from a form-encoded client is a truthy String —
+  # without casting, a caller explicitly asking not to mutate the graph
+  # would silently reinforce anyway.
+  def bool_param(key, default:)
+    return default unless params.key?(key)
+
+    value = ActiveModel::Type::Boolean.new.cast(params[key])
+    value.nil? ? default : value
   end
 end
