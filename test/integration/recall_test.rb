@@ -32,6 +32,27 @@ class RecallTest < ActionDispatch::IntegrationTest
     assert_operator json["results"].length, :>, 0
   end
 
+  test "recall applies public rerank weight overrides" do
+    body = {
+      query: "anything",
+      node_activations: {},
+      reinforce: false,
+      rerank_alpha_vector: 0.0,
+      rerank_beta_alignment: 0.0,
+      rerank_gamma_charge: 1.0
+    }
+
+    post "/recall", params: body.to_json, headers: auth_headers
+    assert_response :ok
+    json = JSON.parse(response.body)
+
+    assert_operator json["results"].length, :>, 0
+    json["results"].each do |result|
+      assert_in_delta result["charge"], result["final_score"], 0.0001,
+                      "expected charge-only scoring for node #{result["id"]}"
+    end
+  end
+
   test "charged recall reinforces aligned nodes more than unaligned ones" do
     body = {
       query: "being seen",

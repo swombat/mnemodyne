@@ -10,9 +10,9 @@ class RecallController < ApplicationController
       walk_count: params[:walk_count],
       vector_seed_pool: params[:vector_seed_pool],
       base_reinforcement: params[:base_reinforcement],
-      rerank_alpha_vector: params[:rerank_alpha_vector],
-      rerank_beta_alignment: params[:rerank_beta_alignment],
-      rerank_gamma_charge: params[:rerank_gamma_charge]
+      score_alpha_vector: params[:rerank_alpha_vector],
+      score_beta_alignment: params[:rerank_beta_alignment],
+      score_gamma_charge: params[:rerank_gamma_charge]
     ).call
 
     render json: result
