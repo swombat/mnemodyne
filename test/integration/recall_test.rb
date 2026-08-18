@@ -98,6 +98,62 @@ class RecallTest < ActionDispatch::IntegrationTest
     refute collapsed, "garbage weights must fall back to blended default scoring"
   end
 
+  test "out-of-domain numeric params fall back to defaults" do
+    body = {
+      query: "being seen",
+      seed_node_ids: [@joy.id],
+      node_activations: { @being_met.id => 0.9 },
+      reinforce: true,
+      walk_depth: 0,
+      walk_count: 0,
+      base_reinforcement: "-1.0"
+    }
+
+    charge_before = @joy.reload.charge
+    post "/recall", params: body.to_json, headers: auth_headers
+    assert_response :ok
+    json = JSON.parse(response.body)
+
+    assert_operator json["results"].length, :>, 0,
+                    "invalid walk_count should fall back to the documented default"
+    assert_operator @joy.reload.charge, :>=, charge_before,
+                    "invalid negative reinforcement must never lower stored charge"
+    assert_includes 0.0..1.0, @joy.charge
+  end
+
+  test "negative vector seed pool falls back to the default" do
+    body = {
+      query: "anything",
+      node_activations: {},
+      reinforce: false,
+      vector_seed_pool: -1
+    }
+
+    post "/recall", params: body.to_json, headers: auth_headers
+    assert_response :ok
+
+    json = JSON.parse(response.body)
+    assert_operator json["results"].length, :>, 0,
+                    "invalid vector_seed_pool should not reach PostgreSQL as a negative LIMIT"
+  end
+
+  test "reinforcement never applies a negative delta" do
+    charge_before = @joy.reload.charge
+    result = Recall.new(
+      query: "being seen",
+      seed_node_ids: [@joy.id],
+      node_activations: { @being_met.id => 1.0 },
+      walk_depth: 0,
+      walk_count: 1,
+      reinforce: true,
+      base_reinforcement: -1.0
+    ).call
+
+    assert_nil result[:results].first[:applied_reinforcement]
+    assert_equal charge_before, @joy.reload.charge
+    assert_includes 0.0..1.0, @joy.charge
+  end
+
   test "string 'false' for reinforce is treated as false, not truthy" do
     body = {
       query: "being seen",
@@ -122,6 +178,9 @@ class RecallTest < ActionDispatch::IntegrationTest
     body = {
       query: "being seen",
       node_activations: { @daniel.id => 0.85, @being_met.id => 0.9 },
+      seed_node_ids: [@joy.id, @barrios.id],
+      walk_depth: 0,
+      walk_count: 2,
       reinforce: true
     }
 

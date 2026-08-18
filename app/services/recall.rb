@@ -234,8 +234,8 @@ class Recall
 
     results.each do |r|
       delta = @params[:base_reinforcement] * intensity * (r[:alignment] / max_align)
-      next if delta.zero?
-      new_charge = [r[:node].charge + delta, 1.0].min
+      next unless delta.positive?
+      new_charge = (r[:node].charge + delta).clamp(0.0, 1.0)
       r[:node].update_columns(charge: new_charge, updated_at: Time.current)
       r[:applied_reinforcement] = delta
     end

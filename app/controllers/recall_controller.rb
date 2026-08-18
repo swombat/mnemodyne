@@ -6,13 +6,13 @@ class RecallController < ApplicationController
       seed_node_ids: params[:seed_node_ids],
       node_type_filter: params[:node_type_filter],
       reinforce: bool_param(:reinforce, default: true),
-      walk_depth: int_param(:walk_depth),
-      walk_count: int_param(:walk_count),
-      vector_seed_pool: int_param(:vector_seed_pool),
-      base_reinforcement: float_param(:base_reinforcement),
-      score_alpha_vector: float_param(:rerank_alpha_vector),
-      score_beta_alignment: float_param(:rerank_beta_alignment),
-      score_gamma_charge: float_param(:rerank_gamma_charge)
+      walk_depth: int_param(:walk_depth, min: 0),
+      walk_count: int_param(:walk_count, min: 1),
+      vector_seed_pool: int_param(:vector_seed_pool, min: 1),
+      base_reinforcement: float_param(:base_reinforcement, min: 0.0),
+      score_alpha_vector: float_param(:rerank_alpha_vector, min: 0.0),
+      score_beta_alignment: float_param(:rerank_beta_alignment, min: 0.0),
+      score_gamma_charge: float_param(:rerank_gamma_charge, min: 0.0)
     ).call
 
     render json: result
@@ -30,8 +30,8 @@ class RecallController < ApplicationController
       seed_node_ids: seed_ids,
       node_activations: params[:node_activations]&.to_unsafe_h&.merge(node.id => 1.0),
       reinforce: bool_param(:reinforce, default: true),
-      walk_depth: int_param(:walk_depth),
-      walk_count: int_param(:walk_count)
+      walk_depth: int_param(:walk_depth, min: 0),
+      walk_count: int_param(:walk_count, min: 1)
     ).call
 
     render json: result
@@ -40,16 +40,29 @@ class RecallController < ApplicationController
   private
 
   # Numeric params may arrive as JSON numbers or as strings (form-encoded
-  # clients, sloppy callers). Coerce valid values; turn garbage into nil so
-  # Recall's `overrides.compact` falls back to DEFAULTS instead of the
+  # clients, sloppy callers). Coerce valid values; turn malformed or
+  # out-of-domain values into nil so Recall's `overrides.compact` falls back
+  # to DEFAULTS instead of the
   # request 500ing mid-arithmetic — and instead of `"banana".to_f` silently
   # zeroing a scoring weight.
-  def float_param(key)
-    Float(params[key], exception: false)
+  def float_param(key, min: nil, max: nil)
+    value = Float(params[key], exception: false)
+    return unless value&.finite?
+    return if min && value < min
+    return if max && value > max
+
+    value
   end
 
-  def int_param(key)
-    Integer(params[key], exception: false)
+  def int_param(key, min: nil, max: nil)
+    raw = params[key]
+    return if raw.is_a?(Numeric) && raw.to_i != raw
+
+    value = Integer(raw, exception: false)
+    return if min && value && value < min
+    return if max && value && value > max
+
+    value
   end
 
   # `reinforce: "false"` from a form-encoded client is a truthy String —
