@@ -184,6 +184,44 @@ Memories don't have to have sources — many are recorded in-conversation where 
 
 11. **Respond.** Return nodes with their final scores, alignments, types, and applied reinforcements.
 
+### Spread modes (added 2026-09-06)
+
+Step 7 ("Curate") has two modes, selected by `spread` in the request body.
+
+**`score`** (default; the original behaviour): bin the candidate pool by
+`final_score` into `walk_count` quantiles and pick one node at random from each.
+Diversity is statistical. The best match sits in the top bin with `walk_count`
+other candidates and is returned with probability ≈ 1/bin-size — i.e. the direct
+hit is *usually dropped*.
+
+**`distance`** (proposed by Daniel, 2026-09-06): return an anchor and a ladder.
+
+1. **Anchor** — the top-scored vector seed not in `exclude_node_ids`. Always
+   returned, `distance: 0`.
+2. **Layers** — breadth-first from the anchor over *authored* edges in both
+   directions, ignoring `spread_ignored_edge_types` (default `co_retrieved`:
+   Hebbian wiring makes the graph a small world, and distance over it means
+   nothing). Hub types (`need`, `person`) are traversed but never returned. At
+   each depth *d* the best-scored returnable node not yet seen is returned with
+   `distance: d`. So: 1 = explicitly linked, 2 = shares a need or person,
+   3+ = neighbourhood.
+3. Stop at `walk_count` results, at `spread_max_depth` (default 6), or when the
+   component is exhausted. A sparse graph returns **fewer** results; it never
+   pads a layer twice.
+
+Gravity (charge, need alignment) acts as the ranking *within* a layer instead
+of biasing a random path. Given the same query and exclusions the ladder is
+deterministic; the only randomness left is upstream, in how the query was
+formed. Dormant nodes are neither traversed nor returned in either mode.
+
+`exclude_node_ids` (both modes): node ids the caller has already surfaced this
+session. Applied before anchor selection, so the chain never hangs off a node
+the caller is about to discard.
+
+Each result carries `distance` (`null` in score mode); the response carries
+`spread`. Reinforcement and Hebbian wiring, when `reinforce` is true, apply to
+the returned set exactly as before.
+
 ## 5. API Endpoints
 
 All endpoints require `Authorization: Bearer <token>`. Single shared token for v1.
@@ -202,6 +240,8 @@ All endpoints require `Authorization: Bearer <token>`. Single shared token for v
 - `GET /nodes/:id/edges` — neighbors of a node, with edge details.
 
 ### 5.3 Recall
+
+Body accepts `spread` (`score` | `distance`), `spread_max_depth`, and `exclude_node_ids` (≤500 uuids) in addition to the inputs above.
 
 - `POST /recall` — the workhorse. See Section 4.
 - `POST /recall/by_node` — `{node_id, node_activations, walk_count}` — start the walk from a specific node (e.g., a person-node) instead of vector search. Useful for "who am I with this person" queries.

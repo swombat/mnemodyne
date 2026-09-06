@@ -7,7 +7,8 @@
 #   4. Re-rank seeds                      (α·vector + β·alignment + γ·charge)
 #   5. Walk                               (weighted random walk, depth D)
 #   6. Collect + dedup
-#   7. Curate top N by final_score
+#   7. Curate                             (spread: "score" → quintile bins;
+#                                          spread: "distance" → anchor + BFS layers)
 #   8. Reinforce charges                  (intensity × alignment × base)
 #   9. Hebbian wire pairs that co-surfaced
 #  10. (caller) write a log row if it wants
@@ -25,19 +26,46 @@ class Recall
     score_beta_alignment: 0.3,
     score_gamma_charge: 0.3,
     walk_charge_floor: 0.3,  # minimum charge multiplier in walk weighting (1.0 = pure charge bias, 0.0 = no penalty for low charge). 0.3 = soft preference, low-charge nodes still reachable.
-    hebbian_base: 0.1
+    hebbian_base: 0.1,
+    # spread: how the returned set is chosen from the candidate pool.
+    #   "score"    — the original: quintile bins by final_score, one random pick
+    #                per bin. Diversity is statistical; the best match has only a
+    #                1/bins chance of being returned at all.
+    #   "distance" — anchor + layers (2026-09-06, proposed by Daniel): the
+    #                top-scored vector seed is always returned (distance 0), then
+    #                the best-scored node at exactly 1 hop, 2 hops, … over
+    #                *authored* edges, hubs (need/person) traversed but not
+    #                returned. Diversity is structural and legible: each result
+    #                carries its `distance` from the anchor.
+    spread: "score",
+    spread_max_depth: 6,
+    # Hebbian co_retrieved edges make the graph a small world (41k of Lume's 50k
+    # edges); with them counted, everything is ≤2 hops from everything and
+    # "distance" means nothing. Distance is measured over authored edges only.
+    spread_ignored_edge_types: %w[co_retrieved].freeze
   }.freeze
+
+  # Node types traversed as connectors but never returned in a distance layer.
+  # One hop from any memory is usually its need or its person; the layer
+  # semantics are: 1 = explicitly linked memory, 2 = shares a hub, 3 = neighbourhood.
+  HUB_TYPES = %w[need person].freeze
+  SPREADS   = %w[score distance].freeze
 
   attr_reader :params
 
   def initialize(query: nil, node_activations: {}, seed_node_ids: nil,
-                 node_type_filter: nil, reinforce: true, **overrides)
+                 node_type_filter: nil, reinforce: true, exclude_node_ids: nil, **overrides)
     @query             = query
     @node_activations  = (node_activations || {}).transform_keys(&:to_s).transform_values(&:to_f)
     @seed_node_ids     = seed_node_ids
     @node_type_filter  = node_type_filter
     @reinforce         = reinforce
+    # Session-level dedupe belongs server-side: in distance mode the anchor
+    # must be chosen among nodes NOT already surfaced, or the whole chain hangs
+    # off something the caller is about to discard.
+    @exclude_node_ids  = Array(exclude_node_ids).map(&:to_s).to_set
     @params            = DEFAULTS.merge(overrides.compact.symbolize_keys)
+    raise ArgumentError, "spread must be one of #{SPREADS.join(', ')}" unless SPREADS.include?(@params[:spread].to_s)
   end
 
   def call
@@ -47,6 +75,27 @@ class Recall
     qvec, seed_nodes = embed_and_seed(effective)
     return empty_result(effective, intensity) if seed_nodes.empty?
 
+    final = if @params[:spread].to_s == "distance"
+      distance_spread(seed_nodes, qvec, effective)
+    else
+      score_spread(seed_nodes, qvec, effective)
+    end
+
+    apply_reinforcement(final, intensity) if @reinforce
+    apply_hebbian(final, intensity)       if @reinforce && final.length > 1
+
+    {
+      effective_activations: effective,
+      request_intensity: intensity,
+      spread: @params[:spread].to_s,
+      results: final.map { |r| serialize(r) }
+    }
+  end
+
+  private
+
+  # The original curation: walk, pool, quintile-bin by score, one random pick per bin.
+  def score_spread(seed_nodes, qvec, effective)
     # Random sample for walk-starts (no rerank-discard). The walk is the diversity
     # engine; ranking the seeds first would bias the walk toward the constitutional
     # cluster (every node connected to Daniel/to-have-a-sense-of-self would beat
@@ -58,23 +107,59 @@ class Recall
     # are intentionally dropped — cosine just gave us a starting neighbourhood;
     # the walk does the surfacing.
     candidate_nodes = (walk_starts + walked_nodes).uniq(&:id)
+                        .reject { |n| @exclude_node_ids.include?(n.id) }
     scored          = candidate_nodes.map { |n| score(n, qvec, effective) }
 
     # Quintile bins by final_score, one random pick per bin. Forces a spread
     # across the relevance ladder rather than collapsing to top-N.
-    final = bin_and_sample(scored, @params[:walk_count])
-
-    apply_reinforcement(final, intensity) if @reinforce
-    apply_hebbian(final, intensity)       if @reinforce && final.length > 1
-
-    {
-      effective_activations: effective,
-      request_intensity: intensity,
-      results: final.map { |r| serialize(r) }
-    }
+    bin_and_sample(scored, @params[:walk_count])
   end
 
-  private
+  # Anchor + layers. Returns up to walk_count scored rows, each tagged with
+  # :distance (0 = anchor). Gravity (charge, need alignment) acts as the ranking
+  # WITHIN a layer rather than as path-sampling bias; the only randomness left
+  # is upstream, in the query. A sparse graph runs out of layers early and
+  # returns fewer results — honestly, rather than padding a layer twice.
+  def distance_spread(seed_nodes, qvec, effective)
+    seeds = seed_nodes.reject { |n| @exclude_node_ids.include?(n.id) }
+    return [] if seeds.empty?
+
+    anchor = seeds.map { |n| score(n, qvec, effective) }.max_by { |r| r[:final_score] }
+    anchor[:distance] = 0
+    results  = [anchor]
+    visited  = Set[anchor[:node].id]
+    frontier = [anchor[:node].id]
+    ignored  = Array(@params[:spread_ignored_edge_types])
+    depth    = 0
+
+    while results.length < @params[:walk_count] && frontier.any? && depth < @params[:spread_max_depth]
+      depth += 1
+      edges = Edge.where("source_id IN (?) OR target_id IN (?)", frontier, frontier)
+      edges = edges.where.not(edge_type: ignored) if ignored.any?
+      touched = edges.pluck(:source_id, :target_id).flatten.uniq - visited.to_a
+      break if touched.empty?
+
+      # Dormant nodes are neither traversed nor returned (same rule as the walk).
+      layer = Node.where(id: touched).active_only.to_a
+      visited.merge(touched)                    # dormant ids too: never re-expand them
+      frontier = layer.map(&:id)
+      break if visited.size > 5_000             # bound the BFS on dense graphs
+
+      returnable = layer.reject { |n| @exclude_node_ids.include?(n.id) }
+      returnable = if @node_type_filter
+        returnable.select { |n| Array(@node_type_filter).include?(n.node_type) }
+      else
+        returnable.reject { |n| HUB_TYPES.include?(n.node_type) }
+      end
+      best = returnable.map { |n| score(n, qvec, effective) }.max_by { |r| r[:final_score] }
+      next unless best                           # hub-only layer: keep expanding
+
+      best[:distance] = depth
+      results << best
+    end
+
+    results
+  end
 
   def build_effective_activations
     explicit = @node_activations.dup
@@ -280,6 +365,7 @@ class Recall
       vector_similarity: r[:vector_similarity].round(4),
       alignment: r[:alignment].round(4),
       final_score: r[:final_score].round(4),
+      distance: r[:distance],
       applied_reinforcement: r[:applied_reinforcement]&.round(6)
     }
   end

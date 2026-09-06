@@ -6,6 +6,9 @@ class RecallController < ApplicationController
       seed_node_ids: params[:seed_node_ids],
       node_type_filter: params[:node_type_filter],
       reinforce: bool_param(:reinforce, default: true),
+      exclude_node_ids: id_list_param(:exclude_node_ids),
+      spread: enum_param(:spread, Recall::SPREADS),
+      spread_max_depth: int_param(:spread_max_depth, min: 1, max: 10),
       walk_depth: int_param(:walk_depth, min: 0),
       walk_count: int_param(:walk_count, min: 1),
       vector_seed_pool: int_param(:vector_seed_pool, min: 1),
@@ -30,6 +33,9 @@ class RecallController < ApplicationController
       seed_node_ids: seed_ids,
       node_activations: params[:node_activations]&.to_unsafe_h&.merge(node.id => 1.0),
       reinforce: bool_param(:reinforce, default: true),
+      exclude_node_ids: id_list_param(:exclude_node_ids),
+      spread: enum_param(:spread, Recall::SPREADS),
+      spread_max_depth: int_param(:spread_max_depth, min: 1, max: 10),
       walk_depth: int_param(:walk_depth, min: 0),
       walk_count: int_param(:walk_count, min: 1)
     ).call
@@ -63,6 +69,19 @@ class RecallController < ApplicationController
     return if max && value && value > max
 
     value
+  end
+
+  # Unknown spread names fall back to the default rather than 400ing; the
+  # response echoes the spread actually used.
+  def enum_param(key, allowed)
+    value = params[key].to_s
+    allowed.include?(value) ? value : nil
+  end
+
+  # Session-seen ids from the caller. Bounded so a runaway client can't ship
+  # its whole history in every request; non-UUID entries are dropped.
+  def id_list_param(key, max: 500)
+    Array(params[key]).map(&:to_s).select { |v| v.match?(/\A[0-9a-f-]{36}\z/i) }.first(max)
   end
 
   # `reinforce: "false"` from a form-encoded client is a truthy String —
