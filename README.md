@@ -266,3 +266,34 @@ it is.
 Issues and PRs welcome. The architecture is opinionated; corrections are
 especially welcome when they make it more honest about what it does and
 doesn't do.
+
+## Dreaming support
+
+See [`spec/dreaming_v2.md`](spec/dreaming_v2.md), including Lume's §11 review.
+The service provides primitives, not a scheduler, author, or autonomous learner.
+
+- `GET /nodes/sample?n=100&include_dormant=true[&seed=123]`: a uniform sample
+  without replacement from **all memory nodes**, including dormant by default.
+  Excludes `metadata.dream_exempt: true` and memories connected by
+  `involves_person` (either direction) to a person with `privacy_level: high`.
+  Exclusions are applied before sampling and cannot be bypassed on this route.
+  Returns `seed`, `requested_n`, `eligible_count`, `include_dormant`, and `nodes`.
+  Each node contains only `id`, `node_type`, `content`, `source_uris`, `is_dormant`;
+  the author must receive **only content**, not this whole response.
+  Empty pools return an empty array; small pools return every eligible memory.
+  `n` is 1–500; seed is an integer in [0, 2^63). Sampling scans IDs in a
+  repeatable-read snapshot with O(n) reservoir storage, not full node bodies.
+  The seed reproduces selection only for an unchanged eligible pool.
+- `POST /nodes/:id/reinforce` with `{ "reactivate": false }`: atomically adds
+  0.02 to that node's charge, capped at 1.0. Dormancy stays unchanged unless
+  `reactivate: true` is explicitly supplied. Missing `reactivate` means false;
+  malformed booleans are rejected. It creates no edges. This is a deliberate
+  mutation, **not an idempotent endpoint**: do not blindly retry uncertain writes.
+- `dream` is a valid node type with ordinary node behavior. Keeping one creates
+  no source edges unless the caller separately requests authored connections.
+  Include `node_type_filter: ["memory", "dream"]` in recall clients that should
+  surface both without using person/need anchors. Render dream results explicitly
+  as fiction; a database type alone is not a user-facing label.
+
+No schema migration or new edge vocabulary is required. Sampling never changes
+charges, dormancy, timestamps, or edges. Ordinary decay remains independent.

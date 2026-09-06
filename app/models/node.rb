@@ -1,7 +1,7 @@
 class Node < ApplicationRecord
   has_neighbors :embedding
 
-  TYPES = %w[memory need person].freeze
+  TYPES = %w[memory need person dream].freeze
   INTEGRATION_STATES = %w[raw active integrated constitutional].freeze
 
   has_many :outgoing_edges,

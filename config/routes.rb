@@ -4,7 +4,11 @@ Rails.application.routes.draw do
   get "up" => "rails/health#show", as: :rails_health_check
 
   resources :nodes, only: [:index, :show, :create, :update] do
+    collection do
+      get :sample
+    end
     member do
+      post :reinforce
       get :edges, action: :edges
     end
   end

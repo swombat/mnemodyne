@@ -16,6 +16,26 @@ class NodesController < ApplicationController
     render json: { nodes: nodes.map { |n| serialize(n) } }
   end
 
+  # A read-only dreaming pool, filtered before sampling. No caller can bypass
+  # dream_exempt or inherited high-privacy exclusions through this endpoint.
+  def sample
+    n = strict_integer(:n, default: 100, range: 1..500)
+    seed = strict_integer(:seed, default: SecureRandom.random_number(2**63), range: 0...(2**63))
+    include_dormant = strict_boolean(:include_dormant, default: true)
+    render json: DreamSample.call(n: n, seed: seed, include_dormant: include_dormant)
+  end
+
+  def reinforce
+    reactivate = strict_boolean(:reactivate, default: false)
+    node = Node.find(params[:id])
+    node.with_lock do
+      node.charge = [node.charge + Recall::DEFAULTS.fetch(:base_reinforcement), 1.0].min
+      node.is_dormant = false if reactivate
+      node.save!
+    end
+    render json: { node: serialize(node) }
+  end
+
   def show
     render json: { node: serialize(Node.find(params[:id])) }
   end
@@ -70,6 +90,26 @@ class NodesController < ApplicationController
   end
 
   private
+
+  def strict_integer(key, default:, range:)
+    return default unless params.key?(key)
+    raw = params[key]
+    unless (raw.is_a?(Integer) || raw.is_a?(String)) && raw.to_s.match?(/\A[0-9]+\z/)
+      raise ActionController::ParameterMissing, key
+    end
+    value = Integer(raw.to_s, 10)
+    raise ActionController::ParameterMissing, key unless range.cover?(value)
+    value
+  end
+
+  def strict_boolean(key, default:)
+    return default unless params.key?(key)
+    case params[key]
+    when true, "true" then true
+    when false, "false" then false
+    else raise ActionController::ParameterMissing, key
+    end
+  end
 
   def limit_param
     raw = params[:limit].to_i
