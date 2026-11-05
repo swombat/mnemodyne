@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_04_25_180000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_05_110000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pgcrypto"
@@ -45,7 +45,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_25_180000) do
     t.datetime "state_changed_at"
     t.datetime "updated_at", null: false
     t.index ["charge"], name: "index_nodes_on_charge"
-    t.index ["embedding"], name: "index_nodes_on_embedding_cosine", opclass: :vector_cosine_ops, using: :ivfflat
     t.index ["integration_state"], name: "index_nodes_on_integration_state"
     t.index ["is_dormant"], name: "index_nodes_on_is_dormant"
     t.index ["metadata"], name: "index_nodes_on_metadata", using: :gin

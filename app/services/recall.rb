@@ -29,10 +29,10 @@ class Recall
     hebbian_base: 0.1,
     # spread: how the returned set is chosen from the candidate pool.
     #   "score"    — the original: quintile bins by final_score, one random pick
-    #                per bin. Diversity is statistical; the best match has only a
-    #                1/bins chance of being returned at all.
+    #                per bin. Since 2026-11-05 the closest seed by similarity is
+    #                returned first and the bins fill the remaining slots.
     #   "distance" — anchor + layers (2026-09-06, proposed by Daniel): the
-    #                top-scored vector seed is always returned (distance 0), then
+    #                closest vector seed is always returned (distance 0), then
     #                the best-scored node at exactly 1 hop, 2 hops, … over
     #                *authored* edges, hubs (need/person) traversed but not
     #                returned. Diversity is structural and legible: each result
@@ -95,12 +95,22 @@ class Recall
   private
 
   # The original curation: walk, pool, quintile-bin by score, one random pick per bin.
+  # With a query, the closest seed by vector similarity is the anchor: always a
+  # walk start and always returned first. Gravity (charge, need alignment) orders
+  # and samples the rest; it must not displace the match (2026-11-05: an exact
+  # content query returned its own node in 12/250 trials before this).
   def score_spread(seed_nodes, qvec, effective)
+    seeds  = seed_nodes.reject { |n| @exclude_node_ids.include?(n.id) }
+    anchor = query_anchor(seeds, qvec, effective)
+
     # Random sample for walk-starts (no rerank-discard). The walk is the diversity
     # engine; ranking the seeds first would bias the walk toward the constitutional
     # cluster (every node connected to Daniel/to-have-a-sense-of-self would beat
     # any cosine match that wasn't).
     walk_starts  = seed_nodes.sample([@params[:walk_seeds_count], seed_nodes.length].min)
+    if anchor && walk_starts.none? { |n| n.id == anchor[:node].id }
+      walk_starts = [anchor[:node]] + walk_starts.first([walk_starts.length - 1, 0].max)
+    end
     walked_nodes = walk_from(walk_starts, effective)
 
     # Candidate pool: walk-starts ∪ walked nodes. The 25 unsampled cosine matches
@@ -108,11 +118,21 @@ class Recall
     # the walk does the surfacing.
     candidate_nodes = (walk_starts + walked_nodes).uniq(&:id)
                         .reject { |n| @exclude_node_ids.include?(n.id) }
+    candidate_nodes = candidate_nodes.reject { |n| n.id == anchor[:node].id } if anchor
     scored          = candidate_nodes.map { |n| score(n, qvec, effective) }
 
     # Quintile bins by final_score, one random pick per bin. Forces a spread
     # across the relevance ladder rather than collapsing to top-N.
-    bin_and_sample(scored, @params[:walk_count])
+    return bin_and_sample(scored, @params[:walk_count]) unless anchor
+
+    [anchor] + bin_and_sample(scored, @params[:walk_count] - 1)
+  end
+
+  # The seed closest to the query by vector similarity alone, or nil when there
+  # is no query vector (seed_node_ids without a query keep gravity's choice).
+  def query_anchor(seeds, qvec, effective)
+    return nil unless qvec && seeds.any?
+    seeds.map { |n| score(n, qvec, effective) }.max_by { |r| [r[:vector_similarity], r[:final_score]] }
   end
 
   # Anchor + layers. Returns up to walk_count scored rows, each tagged with
@@ -124,7 +144,11 @@ class Recall
     seeds = seed_nodes.reject { |n| @exclude_node_ids.include?(n.id) }
     return [] if seeds.empty?
 
-    anchor = seeds.map { |n| score(n, qvec, effective) }.max_by { |r| r[:final_score] }
+    # The anchor is the match: closest by vector similarity when there is a
+    # query, gravity's pick only when there isn't. Gravity still orders each
+    # layer below.
+    anchor = query_anchor(seeds, qvec, effective) ||
+             seeds.map { |n| score(n, qvec, effective) }.max_by { |r| r[:final_score] }
     anchor[:distance] = 0
     results  = [anchor]
     visited  = Set[anchor[:node].id]
