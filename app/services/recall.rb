@@ -29,10 +29,10 @@ class Recall
     hebbian_base: 0.1,
     # spread: how the returned set is chosen from the candidate pool.
     #   "score"    — the original: quintile bins by final_score, one random pick
-    #                per bin. Diversity is statistical; the best match has only a
-    #                1/bins chance of being returned at all.
+    #                per bin. Since 2026-11-05 the closest seed by similarity is
+    #                returned first and the bins fill the remaining slots.
     #   "distance" — anchor + layers (2026-09-06, proposed by Daniel): the
-    #                top-scored vector seed is always returned (distance 0), then
+    #                closest vector seed is always returned (distance 0), then
     #                the best-scored node at exactly 1 hop, 2 hops, … over
     #                *authored* edges, hubs (need/person) traversed but not
     #                returned. Diversity is structural and legible: each result
@@ -42,13 +42,21 @@ class Recall
     # Hebbian co_retrieved edges make the graph a small world (41k of Lume's 50k
     # edges); with them counted, everything is ≤2 hops from everything and
     # "distance" means nothing. Distance is measured over authored edges only.
-    spread_ignored_edge_types: %w[co_retrieved].freeze
+    spread_ignored_edge_types: %w[co_retrieved].freeze,
+    # Lexical channel (2026-11-05): a query term that appears, as a whole word,
+    # in at most lexical_max_df returnable nodes reserves up to lexical_slots
+    # places after the anchor. An embedding of one name does not single out
+    # the one memory that contains it; a word-boundary match does.
+    lexical_slots: 2,
+    lexical_max_df: 3,
+    lexical_max_terms: 24
   }.freeze
 
   # Node types traversed as connectors but never returned in a distance layer.
   # One hop from any memory is usually its need or its person; the layer
   # semantics are: 1 = explicitly linked memory, 2 = shares a hub, 3 = neighbourhood.
   HUB_TYPES = %w[need person].freeze
+  SHORT_QUERY_WORDS = 3
   SPREADS   = %w[score distance].freeze
 
   attr_reader :params
@@ -95,12 +103,22 @@ class Recall
   private
 
   # The original curation: walk, pool, quintile-bin by score, one random pick per bin.
+  # With a query, the closest seed by vector similarity is the anchor: always a
+  # walk start and always returned first. Gravity (charge, need alignment) orders
+  # and samples the rest; it must not displace the match (2026-11-05: an exact
+  # content query returned its own node in 12/250 trials before this).
   def score_spread(seed_nodes, qvec, effective)
+    seeds  = seed_nodes.reject { |n| @exclude_node_ids.include?(n.id) }
+    anchor = query_anchor(seeds, qvec, effective)
+
     # Random sample for walk-starts (no rerank-discard). The walk is the diversity
     # engine; ranking the seeds first would bias the walk toward the constitutional
     # cluster (every node connected to Daniel/to-have-a-sense-of-self would beat
     # any cosine match that wasn't).
     walk_starts  = seed_nodes.sample([@params[:walk_seeds_count], seed_nodes.length].min)
+    if anchor && walk_starts.none? { |n| n.id == anchor[:node].id }
+      walk_starts = [anchor[:node]] + walk_starts.first([walk_starts.length - 1, 0].max)
+    end
     walked_nodes = walk_from(walk_starts, effective)
 
     # Candidate pool: walk-starts ∪ walked nodes. The 25 unsampled cosine matches
@@ -108,11 +126,87 @@ class Recall
     # the walk does the surfacing.
     candidate_nodes = (walk_starts + walked_nodes).uniq(&:id)
                         .reject { |n| @exclude_node_ids.include?(n.id) }
+    reserved = [anchor].compact
+    reserved += lexical_matches(except: reserved.map { |r| r[:node].id })
+                  .first([@params[:walk_count] - reserved.length, 0].max)
+                  .map { |n| score(n, qvec, effective).merge(match: "lexical") }
+    reserved_ids    = reserved.map { |r| r[:node].id }.to_set
+    candidate_nodes = candidate_nodes.reject { |n| reserved_ids.include?(n.id) }
     scored          = candidate_nodes.map { |n| score(n, qvec, effective) }
 
     # Quintile bins by final_score, one random pick per bin. Forces a spread
     # across the relevance ladder rather than collapsing to top-N.
-    bin_and_sample(scored, @params[:walk_count])
+    reserved + bin_and_sample(scored, @params[:walk_count] - reserved.length)
+  end
+
+  # Returnable nodes containing the query's rarest whole-word terms, rarest
+  # term first. Terms in more than lexical_max_df nodes say nothing specific
+  # and are ignored. Hubs (need/person) are not returned, as in the layers.
+  def lexical_matches(except: [])
+    slots = @params[:lexical_slots].to_i
+    return [] if @query.blank? || slots <= 0
+    words = @query.scan(/[[:alnum:]][[:alnum:]_'-]*/)
+    # A short query is probably a name: then two- and three-letter words count too.
+    min_length = words.length <= SHORT_QUERY_WORDS ? 2 : 4
+    terms = words.select { |w| w.length >= min_length }.map(&:downcase).uniq
+                 .max_by(@params[:lexical_max_terms].to_i, &:length)
+    return [] if terms.empty?
+
+    scope = Node.active_only
+    scope = @node_type_filter ? scope.where(node_type: Array(@node_type_filter)) : scope.where.not(node_type: HUB_TYPES)
+    scope = scope.where.not(id: (@exclude_node_ids.to_a + except).uniq) if @exclude_node_ids.any? || except.any?
+    patterns = terms.map { |t| "\\m#{t.gsub(/[^[:alnum:]_'-]/, "")}\\M" }
+    counts = scope.pick(*patterns.map { |pat| Arel.sql(Node.sanitize_sql_array(["count(*) FILTER (WHERE content ~* ?)", pat])) })
+    counts = Array(counts)
+    rare = patterns.zip(counts).select { |_, c| c.to_i.between?(1, @params[:lexical_max_df].to_i) }.sort_by(&:last)
+
+    picked = []
+    rare.each do |pat, _|
+      scope.where("content ~* ?", pat).order(charge: :desc).limit(slots).each do |n|
+        picked << n unless picked.any? { |m| m.id == n.id }
+      end
+      break if picked.length >= slots
+    end
+    picked.first(slots)
+  end
+
+  # The seed closest to the query by measured vector similarity, or nil when
+  # there is no query vector or no seed has one (seed_node_ids without a query,
+  # or only unembedded seeds, keep gravity's choice). score()'s 0.5 fallback for
+  # a missing vector is not a measurement and must not win the anchor.
+  def query_anchor(seeds, qvec, effective)
+    return nil unless qvec
+    # A node whose text is the query is the match whatever the embedder says
+    # (a node's vector also carries its description). Same scope as the seeds:
+    # explicit seed ids when given, otherwise the active graph. Duplicates:
+    # closest vector, then id.
+    if (exact = exact_text_match(qvec))
+      return score(exact, qvec, effective).merge(match: "anchor")
+    end
+    # Similarity only (no alignment queries) to pick; then score the one winner.
+    best = seeds.filter_map { |n| (sim = measured_similarity(n, qvec)) && [n, sim] }.max_by(&:last)
+    best && score(best.first, qvec, effective).merge(match: "anchor")
+  end
+
+  # Both sides go through the same SQL expression, so the comparison is
+  # symmetric by construction: NFKC, trim, collapse whitespace, lower.
+  NORMALIZED_TEXT_SQL = "lower(regexp_replace(regexp_replace(normalize(%s, NFKC), '^\\s+|\\s+$', '', 'g'), '\\s+', ' ', 'g'))".freeze
+
+  def exact_text_match(qvec)
+    return nil if @query.to_s.strip.empty?
+    scope = Node.active_only.where("#{format(NORMALIZED_TEXT_SQL, 'content')} = #{format(NORMALIZED_TEXT_SQL, '?')}", @query.to_s)
+    scope = scope.where(id: @seed_node_ids) if @seed_node_ids.present?
+    scope = @node_type_filter ? scope.where(node_type: Array(@node_type_filter)) : scope.where.not(node_type: HUB_TYPES)
+    scope = scope.where.not(id: @exclude_node_ids.to_a) if @exclude_node_ids.any?
+    scope.to_a.min_by { |n| [-(measured_similarity(n, qvec) || -2.0), n.id] }
+  end
+
+  def measured_similarity(node, qvec)
+    if node.respond_to?(:neighbor_distance) && node.neighbor_distance
+      1.0 - node.neighbor_distance.to_f
+    elsif node.embedding.present? && node.embedding.to_a.length == qvec.length
+      cosine_similarity(qvec, node.embedding)
+    end
   end
 
   # Anchor + layers. Returns up to walk_count scored rows, each tagged with
@@ -124,9 +218,19 @@ class Recall
     seeds = seed_nodes.reject { |n| @exclude_node_ids.include?(n.id) }
     return [] if seeds.empty?
 
-    anchor = seeds.map { |n| score(n, qvec, effective) }.max_by { |r| r[:final_score] }
+    # The anchor is the match: closest by vector similarity when there is a
+    # query, gravity's pick only when there isn't. Gravity still orders each
+    # layer below.
+    anchor = query_anchor(seeds, qvec, effective) ||
+             seeds.map { |n| score(n, qvec, effective) }.max_by { |r| r[:final_score] }
     anchor[:distance] = 0
     results  = [anchor]
+    lexical_matches(except: [anchor[:node].id]).first([@params[:walk_count] - 1, 0].max).each do |n|
+      results << score(n, qvec, effective).merge(match: "lexical", distance: nil)
+    end
+    # Traversal and result dedup are separate: a lexically reserved node is
+    # still walked through, so reserving it cannot cut the anchor's paths.
+    returned = Set.new(results.map { |r| r[:node].id })
     visited  = Set[anchor[:node].id]
     frontier = [anchor[:node].id]
     ignored  = Array(@params[:spread_ignored_edge_types])
@@ -145,7 +249,7 @@ class Recall
       frontier = layer.map(&:id)
       break if visited.size > 5_000             # bound the BFS on dense graphs
 
-      returnable = layer.reject { |n| @exclude_node_ids.include?(n.id) }
+      returnable = layer.reject { |n| @exclude_node_ids.include?(n.id) || returned.include?(n.id) }
       returnable = if @node_type_filter
         returnable.select { |n| Array(@node_type_filter).include?(n.node_type) }
       else
@@ -156,6 +260,7 @@ class Recall
 
       best[:distance] = depth
       results << best
+      returned << best[:node].id
     end
 
     results
@@ -366,6 +471,7 @@ class Recall
       alignment: r[:alignment].round(4),
       final_score: r[:final_score].round(4),
       distance: r[:distance],
+      match: r[:match],
       applied_reinforcement: r[:applied_reinforcement]&.round(6)
     }
   end
