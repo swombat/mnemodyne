@@ -131,6 +131,17 @@ class RecallAnchorTest < ActiveSupport::TestCase
     refute_includes long.send(:lexical_matches).map(&:id), ada.id
   end
 
+  test "exact-text matching normalises both sides the same way in PostgreSQL" do
+    literal = mem("Ｑｕｉｌｌａｎ  at the door", charge: 0.1)
+    ascii   = mem("quillan at the door", charge: 0.1)
+    literal.update_columns(embedding: Embeddings.provider.embed("Ｑｕｉｌｌａｎ at the door"))
+    ascii.update_columns(embedding: Embeddings.provider.embed("something else"))
+    r = Recall.new(query: "Ｑｕｉｌｌａｎ at the door", reinforce: false, spread: "distance").call
+    assert_equal literal.id, r[:results].first[:id], "both are exact after NFKC; the closer vector wins"
+    r = Recall.new(query: "\tquillan   AT the door \n", reinforce: false, spread: "distance").call
+    assert_includes [ literal.id, ascii.id ], r[:results].first[:id]
+  end
+
   private
 
   def mem(content, charge:)

@@ -188,10 +188,13 @@ class Recall
     best && score(best.first, qvec, effective).merge(match: "anchor")
   end
 
+  # Both sides go through the same SQL expression, so the comparison is
+  # symmetric by construction: NFKC, trim, collapse whitespace, lower.
+  NORMALIZED_TEXT_SQL = "lower(regexp_replace(regexp_replace(normalize(%s, NFKC), '^\\s+|\\s+$', '', 'g'), '\\s+', ' ', 'g'))".freeze
+
   def exact_text_match(qvec)
-    wanted = @query.to_s.unicode_normalize(:nfkc).downcase.split.join(" ")
-    return nil if wanted.empty?
-    scope = Node.active_only.where("lower(regexp_replace(btrim(content), '\\s+', ' ', 'g')) = ?", wanted)
+    return nil if @query.to_s.strip.empty?
+    scope = Node.active_only.where("#{format(NORMALIZED_TEXT_SQL, 'content')} = #{format(NORMALIZED_TEXT_SQL, '?')}", @query.to_s)
     scope = scope.where(id: @seed_node_ids) if @seed_node_ids.present?
     scope = @node_type_filter ? scope.where(node_type: Array(@node_type_filter)) : scope.where.not(node_type: HUB_TYPES)
     scope = scope.where.not(id: @exclude_node_ids.to_a) if @exclude_node_ids.any?
