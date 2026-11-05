@@ -128,11 +128,23 @@ class Recall
     [anchor] + bin_and_sample(scored, @params[:walk_count] - 1)
   end
 
-  # The seed closest to the query by vector similarity alone, or nil when there
-  # is no query vector (seed_node_ids without a query keep gravity's choice).
+  # The seed closest to the query by measured vector similarity, or nil when
+  # there is no query vector or no seed has one (seed_node_ids without a query,
+  # or only unembedded seeds, keep gravity's choice). score()'s 0.5 fallback for
+  # a missing vector is not a measurement and must not win the anchor.
   def query_anchor(seeds, qvec, effective)
-    return nil unless qvec && seeds.any?
-    seeds.map { |n| score(n, qvec, effective) }.max_by { |r| [r[:vector_similarity], r[:final_score]] }
+    return nil unless qvec
+    # Similarity only (no alignment queries) to pick; then score the one winner.
+    best = seeds.filter_map { |n| (sim = measured_similarity(n, qvec)) && [n, sim] }.max_by(&:last)
+    best && score(best.first, qvec, effective)
+  end
+
+  def measured_similarity(node, qvec)
+    if node.respond_to?(:neighbor_distance) && node.neighbor_distance
+      1.0 - node.neighbor_distance.to_f
+    elsif node.embedding.present? && node.embedding.to_a.length == qvec.length
+      cosine_similarity(qvec, node.embedding)
+    end
   end
 
   # Anchor + layers. Returns up to walk_count scored rows, each tagged with

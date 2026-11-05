@@ -45,6 +45,25 @@ class RecallAnchorTest < ActiveSupport::TestCase
     assert_equal @heavy.first.id, r[:results].first[:id]
   end
 
+  test "an unembedded seed never wins the anchor on the 0.5 fallback" do
+    bare = mem("unembedded seed", charge: 0.95)
+    bare.update_columns(embedding: nil)
+    %w[distance score].each do |spread|
+      r = Recall.new(query: "an unrelated question", seed_node_ids: [ bare.id, @target.id ],
+                     reinforce: false, spread: spread).call
+      assert_equal @target.id, r[:results].first[:id], spread
+    end
+  end
+
+  test "with only unembedded seeds the anchor falls back to gravity without failing" do
+    bare = mem("unembedded seed", charge: 0.95)
+    bare.update_columns(embedding: nil)
+    %w[distance score].each do |spread|
+      r = Recall.new(query: "an unrelated question", seed_node_ids: [ bare.id ], reinforce: false, spread: spread).call
+      assert_equal bare.id, r[:results].first[:id], spread
+    end
+  end
+
   private
 
   def mem(content, charge:)
