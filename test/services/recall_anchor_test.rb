@@ -88,6 +88,49 @@ class RecallAnchorTest < ActiveSupport::TestCase
     refute_includes ids, hidden.id
   end
 
+  test "a node whose text is the query is the anchor even when another vector is closer" do
+    exact = mem("The  Kettle on the table", charge: 0.05)
+    exact.update_columns(embedding: Embeddings.provider.embed("far away text"))
+    %w[distance score].each do |spread|
+      r = Recall.new(query: "the kettle on the TABLE ", reinforce: false, spread: spread).call
+      assert_equal exact.id, r[:results].first[:id], spread
+    end
+  end
+
+  test "identical-text duplicates resolve to the closer vector, deterministically" do
+    q = "duplicate memory text"
+    near = mem(q, charge: 0.1)
+    far  = mem("Duplicate  memory text", charge: 0.9)
+    near.update_columns(embedding: Embeddings.provider.embed(q))
+    far.update_columns(embedding: Embeddings.provider.embed("unrelated"))
+    5.times do
+      assert_equal near.id, Recall.new(query: q, reinforce: false, spread: "distance").call[:results].first[:id]
+    end
+  end
+
+  test "a lexically reserved node is still walked through in distance spread" do
+    a = mem("chain start about teapots", charge: 0.5)
+    b = mem("the Zorblax link in the middle", charge: 0.5)
+    c = mem("final node two hops out", charge: 0.5)
+    Edge.create!(source: a, target: b, edge_type: "theme", weight: 0.9)
+    Edge.create!(source: b, target: c, edge_type: "theme", weight: 0.9)
+    [ a, b, c ].each { |n| n.update_columns(embedding: Embeddings.provider.embed(n.embedding_text)) }
+    r = Recall.new(query: "chain start about teapots Zorblax", seed_node_ids: [ a.id ], reinforce: false, spread: "distance").call
+    by_id = r[:results].to_h { |row| [ row[:id], row[:distance] ] }
+    assert_equal 0, by_id[a.id]
+    assert by_id.key?(b.id), "lexical reservation returned"
+    assert_equal 2, by_id[c.id], "path through the reserved node survives"
+  end
+
+  test "a short query counts a three-letter name" do
+    ada = mem("Lunch with Ada on Thursday", charge: 0.01)
+    ada.update_columns(embedding: Embeddings.provider.embed("nothing like it"))
+    ids = Recall.new(query: "Ada", reinforce: false, spread: "score").call[:results].map { |r| r[:id] }
+    assert_includes ids, ada.id
+    long = Recall.new(query: "tell me ada stuff from the past year or so", reinforce: false)
+    refute_includes long.send(:lexical_matches).map(&:id), ada.id
+  end
+
   private
 
   def mem(content, charge:)

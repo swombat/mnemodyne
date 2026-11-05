@@ -56,6 +56,7 @@ class Recall
   # One hop from any memory is usually its need or its person; the layer
   # semantics are: 1 = explicitly linked memory, 2 = shares a hub, 3 = neighbourhood.
   HUB_TYPES = %w[need person].freeze
+  SHORT_QUERY_WORDS = 3
   SPREADS   = %w[score distance].freeze
 
   attr_reader :params
@@ -144,8 +145,11 @@ class Recall
   def lexical_matches(except: [])
     slots = @params[:lexical_slots].to_i
     return [] if @query.blank? || slots <= 0
-    terms = @query.scan(/[[:alnum:]][[:alnum:]_'-]{3,}/).map(&:downcase).uniq
-                  .max_by(@params[:lexical_max_terms].to_i, &:length)
+    words = @query.scan(/[[:alnum:]][[:alnum:]_'-]*/)
+    # A short query is probably a name: then two- and three-letter words count too.
+    min_length = words.length <= SHORT_QUERY_WORDS ? 2 : 4
+    terms = words.select { |w| w.length >= min_length }.map(&:downcase).uniq
+                 .max_by(@params[:lexical_max_terms].to_i, &:length)
     return [] if terms.empty?
 
     scope = Node.active_only
@@ -172,9 +176,26 @@ class Recall
   # a missing vector is not a measurement and must not win the anchor.
   def query_anchor(seeds, qvec, effective)
     return nil unless qvec
+    # A node whose text is the query is the match whatever the embedder says
+    # (a node's vector also carries its description). Same scope as the seeds:
+    # explicit seed ids when given, otherwise the active graph. Duplicates:
+    # closest vector, then id.
+    if (exact = exact_text_match(qvec))
+      return score(exact, qvec, effective).merge(match: "anchor")
+    end
     # Similarity only (no alignment queries) to pick; then score the one winner.
     best = seeds.filter_map { |n| (sim = measured_similarity(n, qvec)) && [n, sim] }.max_by(&:last)
     best && score(best.first, qvec, effective).merge(match: "anchor")
+  end
+
+  def exact_text_match(qvec)
+    wanted = @query.to_s.unicode_normalize(:nfkc).downcase.split.join(" ")
+    return nil if wanted.empty?
+    scope = Node.active_only.where("lower(regexp_replace(btrim(content), '\\s+', ' ', 'g')) = ?", wanted)
+    scope = scope.where(id: @seed_node_ids) if @seed_node_ids.present?
+    scope = @node_type_filter ? scope.where(node_type: Array(@node_type_filter)) : scope.where.not(node_type: HUB_TYPES)
+    scope = scope.where.not(id: @exclude_node_ids.to_a) if @exclude_node_ids.any?
+    scope.to_a.min_by { |n| [-(measured_similarity(n, qvec) || -2.0), n.id] }
   end
 
   def measured_similarity(node, qvec)
@@ -204,7 +225,10 @@ class Recall
     lexical_matches(except: [anchor[:node].id]).first([@params[:walk_count] - 1, 0].max).each do |n|
       results << score(n, qvec, effective).merge(match: "lexical", distance: nil)
     end
-    visited  = Set.new(results.map { |r| r[:node].id })
+    # Traversal and result dedup are separate: a lexically reserved node is
+    # still walked through, so reserving it cannot cut the anchor's paths.
+    returned = Set.new(results.map { |r| r[:node].id })
+    visited  = Set[anchor[:node].id]
     frontier = [anchor[:node].id]
     ignored  = Array(@params[:spread_ignored_edge_types])
     depth    = 0
@@ -222,7 +246,7 @@ class Recall
       frontier = layer.map(&:id)
       break if visited.size > 5_000             # bound the BFS on dense graphs
 
-      returnable = layer.reject { |n| @exclude_node_ids.include?(n.id) }
+      returnable = layer.reject { |n| @exclude_node_ids.include?(n.id) || returned.include?(n.id) }
       returnable = if @node_type_filter
         returnable.select { |n| Array(@node_type_filter).include?(n.node_type) }
       else
@@ -233,6 +257,7 @@ class Recall
 
       best[:distance] = depth
       results << best
+      returned << best[:node].id
     end
 
     results
