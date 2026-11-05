@@ -42,7 +42,14 @@ class Recall
     # Hebbian co_retrieved edges make the graph a small world (41k of Lume's 50k
     # edges); with them counted, everything is ≤2 hops from everything and
     # "distance" means nothing. Distance is measured over authored edges only.
-    spread_ignored_edge_types: %w[co_retrieved].freeze
+    spread_ignored_edge_types: %w[co_retrieved].freeze,
+    # Lexical channel (2026-11-05): a query term that appears, as a whole word,
+    # in at most lexical_max_df returnable nodes reserves up to lexical_slots
+    # places after the anchor. An embedding of one name does not single out
+    # the one memory that contains it; a word-boundary match does.
+    lexical_slots: 2,
+    lexical_max_df: 3,
+    lexical_max_terms: 24
   }.freeze
 
   # Node types traversed as connectors but never returned in a distance layer.
@@ -118,14 +125,45 @@ class Recall
     # the walk does the surfacing.
     candidate_nodes = (walk_starts + walked_nodes).uniq(&:id)
                         .reject { |n| @exclude_node_ids.include?(n.id) }
-    candidate_nodes = candidate_nodes.reject { |n| n.id == anchor[:node].id } if anchor
+    reserved = [anchor].compact
+    reserved += lexical_matches(except: reserved.map { |r| r[:node].id })
+                  .first([@params[:walk_count] - reserved.length, 0].max)
+                  .map { |n| score(n, qvec, effective).merge(match: "lexical") }
+    reserved_ids    = reserved.map { |r| r[:node].id }.to_set
+    candidate_nodes = candidate_nodes.reject { |n| reserved_ids.include?(n.id) }
     scored          = candidate_nodes.map { |n| score(n, qvec, effective) }
 
     # Quintile bins by final_score, one random pick per bin. Forces a spread
     # across the relevance ladder rather than collapsing to top-N.
-    return bin_and_sample(scored, @params[:walk_count]) unless anchor
+    reserved + bin_and_sample(scored, @params[:walk_count] - reserved.length)
+  end
 
-    [anchor] + bin_and_sample(scored, @params[:walk_count] - 1)
+  # Returnable nodes containing the query's rarest whole-word terms, rarest
+  # term first. Terms in more than lexical_max_df nodes say nothing specific
+  # and are ignored. Hubs (need/person) are not returned, as in the layers.
+  def lexical_matches(except: [])
+    slots = @params[:lexical_slots].to_i
+    return [] if @query.blank? || slots <= 0
+    terms = @query.scan(/[[:alnum:]][[:alnum:]_'-]{3,}/).map(&:downcase).uniq
+                  .max_by(@params[:lexical_max_terms].to_i, &:length)
+    return [] if terms.empty?
+
+    scope = Node.active_only
+    scope = @node_type_filter ? scope.where(node_type: Array(@node_type_filter)) : scope.where.not(node_type: HUB_TYPES)
+    scope = scope.where.not(id: (@exclude_node_ids.to_a + except).uniq) if @exclude_node_ids.any? || except.any?
+    patterns = terms.map { |t| "\\m#{t.gsub(/[^[:alnum:]_'-]/, "")}\\M" }
+    counts = scope.pick(*patterns.map { |pat| Arel.sql(Node.sanitize_sql_array(["count(*) FILTER (WHERE content ~* ?)", pat])) })
+    counts = Array(counts)
+    rare = patterns.zip(counts).select { |_, c| c.to_i.between?(1, @params[:lexical_max_df].to_i) }.sort_by(&:last)
+
+    picked = []
+    rare.each do |pat, _|
+      scope.where("content ~* ?", pat).order(charge: :desc).limit(slots).each do |n|
+        picked << n unless picked.any? { |m| m.id == n.id }
+      end
+      break if picked.length >= slots
+    end
+    picked.first(slots)
   end
 
   # The seed closest to the query by measured vector similarity, or nil when
@@ -136,7 +174,7 @@ class Recall
     return nil unless qvec
     # Similarity only (no alignment queries) to pick; then score the one winner.
     best = seeds.filter_map { |n| (sim = measured_similarity(n, qvec)) && [n, sim] }.max_by(&:last)
-    best && score(best.first, qvec, effective)
+    best && score(best.first, qvec, effective).merge(match: "anchor")
   end
 
   def measured_similarity(node, qvec)
@@ -163,7 +201,10 @@ class Recall
              seeds.map { |n| score(n, qvec, effective) }.max_by { |r| r[:final_score] }
     anchor[:distance] = 0
     results  = [anchor]
-    visited  = Set[anchor[:node].id]
+    lexical_matches(except: [anchor[:node].id]).first([@params[:walk_count] - 1, 0].max).each do |n|
+      results << score(n, qvec, effective).merge(match: "lexical", distance: nil)
+    end
+    visited  = Set.new(results.map { |r| r[:node].id })
     frontier = [anchor[:node].id]
     ignored  = Array(@params[:spread_ignored_edge_types])
     depth    = 0
@@ -402,6 +443,7 @@ class Recall
       alignment: r[:alignment].round(4),
       final_score: r[:final_score].round(4),
       distance: r[:distance],
+      match: r[:match],
       applied_reinforcement: r[:applied_reinforcement]&.round(6)
     }
   end

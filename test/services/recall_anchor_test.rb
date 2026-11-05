@@ -64,6 +64,30 @@ class RecallAnchorTest < ActiveSupport::TestCase
     end
   end
 
+  test "a rare proper noun returns the one memory that contains it, in both spreads" do
+    needle = mem("Playa ate a Physarum culture off the windowsill", charge: 0.05)
+    needle.update_columns(embedding: Embeddings.provider.embed("something unrelated entirely"))
+    %w[distance score].each do |spread|
+      ids = Recall.new(query: "what do I know about physarum", reinforce: false, spread: spread).call[:results].map { |r| r[:id] }
+      assert_includes ids, needle.id, spread
+    end
+  end
+
+  test "a term in more than lexical_max_df nodes does not reserve a slot" do
+    4.times { |i| mem("filler mentioning Barcelona #{i}", charge: 0.01) }
+    r = Recall.new(query: "Barcelona", reinforce: false, spread: "score").call
+    assert_empty r[:results].select { |row| row[:match] == "lexical" }
+  end
+
+  test "lexical matches never return hubs or excluded nodes" do
+    person = Node.create!(node_type: "person", content: "Quillon", charge: 0.5)
+    hidden = mem("Quillon said something once", charge: 0.5)
+    r = Recall.new(query: "Quillon", reinforce: false, spread: "distance", exclude_node_ids: [ hidden.id ]).call
+    ids = r[:results].map { |row| row[:id] }
+    refute_includes ids, person.id
+    refute_includes ids, hidden.id
+  end
+
   private
 
   def mem(content, charge:)
