@@ -9,7 +9,7 @@ module Embeddings
 
     def initialize
       @api_key = ENV.fetch("VOYAGE_API_KEY")
-      @model = ENV.fetch("VOYAGE_EMBEDDING_MODEL", "voyage-3")
+      @model = ENV.fetch("VOYAGE_EMBEDDING_MODEL", "voyage-4")
     end
 
     def embed(text, input_type: "document")

@@ -43,7 +43,7 @@ env:
     # Embedding provider — voyage-3 is the default (1024 dim).
     EMBEDDING_PROVIDER: voyage
     EMBEDDING_DIMENSION: 1024
-    VOYAGE_EMBEDDING_MODEL: voyage-3
+    VOYAGE_EMBEDDING_MODEL: voyage-4
 
     # Decay parameters (the only autonomous service behaviour, fires daily 3am).
     DECAY_RATE: "0.005"

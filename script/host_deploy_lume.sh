@@ -28,7 +28,7 @@ docker run -d --name "$NEW" --network kamal --restart unless-stopped --log-opt m
   --env-file ~/.kamal/apps/mnemos/env/roles/web.env \
   -e KAMAL_CONTAINER_NAME="$NEW" -e KAMAL_VERSION="$SHA" -e KAMAL_HOST=95.217.118.47 \
   -e RAILS_SERVE_STATIC_FILES=true -e RAILS_LOG_TO_STDOUT=true -e RAILS_ENV=production -e SOLID_QUEUE_IN_PUMA=true \
-  -e EMBEDDING_PROVIDER=voyage -e EMBEDDING_DIMENSION=1024 -e VOYAGE_EMBEDDING_MODEL=voyage-3 \
+  -e EMBEDDING_PROVIDER=voyage -e EMBEDDING_DIMENSION=1024 -e VOYAGE_EMBEDDING_MODEL=voyage-4 \
   -e DECAY_RATE=0.005 -e CHARGE_DECAY_RATE=0.001 -e CHARGE_DECAY_FLOOR=0.1 \
   --label service=mnemos --label role=web --label destination= "$IMG" >/dev/null
 CID=$(docker inspect -f '{{.Config.Hostname}}' "$NEW")
