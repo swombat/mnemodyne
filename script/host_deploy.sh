@@ -64,7 +64,18 @@ if docker ps -a --format '{{.Names}}' | grep -qx "$NEW"; then
   docker rm -f "$NEW" >/dev/null && echo "removed leftover candidate $NEW (not serving)"
 fi
 
-MEMORIES=$(docker exec "$PG" sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "select count(*) from nodes where embedding is not null"' 2>/dev/null || echo 0)
+# Embedded-node count against this instance's DB. A query error aborts; only a
+# confirmed absent nodes table (fresh instance, never migrated) counts as 0.
+pgq(){ docker exec "$PG" sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "$1"' _ "$1"; }
+HAS_NODES=$(pgq "select to_regclass('public.nodes') is not null") \
+  || { echo "could not query $PG; refusing to guess the graph's state"; exit 2; }
+case "$HAS_NODES" in
+  f) MEMORIES=0 ;;
+  t) MEMORIES=$(pgq "select count(*) from nodes where embedding is not null") \
+       || { echo "could not count embedded nodes in $PG"; exit 2; } ;;
+  *) echo "unexpected answer from $PG: $HAS_NODES"; exit 2 ;;
+esac
+[[ "$MEMORIES" =~ ^[0-9]+$ ]] || { echo "unexpected count from $PG: $MEMORIES"; exit 2; }
 if [ -z "${VOYAGE_MODEL:-}" ]; then
   if [ -n "$OLD" ]; then
     VOYAGE_MODEL=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$OLD" | sed -n 's/^VOYAGE_EMBEDDING_MODEL=//p')
@@ -80,12 +91,13 @@ echo "service=$SERVICE host=$HOST old=${OLD:-none} new=$NEW model=$VOYAGE_MODEL 
 if docker image inspect "$IMG" >/dev/null 2>&1; then
   echo "image $IMG already built"
 else
-  B=/tmp/mnemo-build-$SHA; rm -rf "$B"; mkdir -p "$B"
+  B=$(mktemp -d /tmp/mnemo-build-XXXXXX)
   # Tarball of exactly $SHA. The token reaches curl on stdin (-K -): it is in no
   # argv, no git remote, and nothing credential-bearing is left in $B.
   printf 'header = "Authorization: token %s"\n' "$GHTOKEN" |
     curl -fsSL -K - "https://api.github.com/repos/swombat/mnemodyne/tarball/$SHA" | tar -xz -C "$B" --strip-components=1
   docker build -q --build-arg RAILS_ENV=production -t "$IMG" "$B" >/dev/null
+  rm -rf "$B"
   echo "built $IMG"
 fi
 unset GHTOKEN
@@ -118,24 +130,35 @@ done
 
 # Verify before the swap: migrations applied, ivfflat gone, the stored vectors
 # match this container's model, and a recall answers. Nothing below writes.
-docker exec "$NEW" bin/rails runner '
+# The vector check samples any embedded node (dormant included) and must run
+# whenever the host-side count saw embedded nodes.
+docker exec -e EXPECTED_EMBEDDED="$MEMORIES" "$NEW" bin/rails runner '
   c = ActiveRecord::Base.connection
   v = c.select_value("select max(version) from schema_migrations").to_s
   idx = c.indexes(:nodes).map(&:name).sort
   puts "schema=#{v} nodes_indexes=#{idx.join(",")}"
   abort "migration not applied" unless v >= "20261105110000"
   abort "ivfflat still present" if idx.include?("index_nodes_on_embedding_cosine")
-  n = Node.memories.active_only.where.not(embedding: nil).order(:created_at).last
+  embedded = Node.where.not(embedding: nil)
+  active = embedded.memories.active_only.order(:created_at).last
+  n = active || embedded.order(:created_at).last
   if n
     stored = n.embedding.to_a.map(&:to_f)
     fresh  = Embeddings.provider.embed(n.embedding_text).map(&:to_f)
+    abort "vector length mismatch: stored #{stored.size}, fresh #{fresh.size}" unless stored.size == fresh.size && !stored.empty?
     cos = stored.zip(fresh).sum { |a, b| a * b } / (Math.sqrt(stored.sum { |a| a * a }) * Math.sqrt(fresh.sum { |b| b * b }))
-    puts "embedding check cosine=#{cos.round(4)} (#{ENV["VOYAGE_EMBEDDING_MODEL"]})"
-    abort "stored vectors were not made by #{ENV["VOYAGE_EMBEDDING_MODEL"]}" if cos < 0.98
-    r = Recall.new(query: n.content, reinforce: false, spread: "distance").call
-    puts "smoke recall results=#{r[:results].size} first_match=#{r[:results].first&.dig(:match)}"
-    abort "empty recall" if r[:results].empty?
+    abort "non-finite cosine (#{cos})" unless cos.finite?
+    puts "embedding check cosine=#{cos.round(4)} (#{ENV["VOYAGE_EMBEDDING_MODEL"]}, #{active ? "active memory" : "dormant/non-memory node"})"
+    abort "stored vectors were not made by #{ENV["VOYAGE_EMBEDDING_MODEL"]}" unless cos >= 0.98
+    if active
+      r = Recall.new(query: n.content, reinforce: false, spread: "distance").call
+      puts "smoke recall results=#{r[:results].size} first_match=#{r[:results].first&.dig(:match)}"
+      abort "empty recall" if r[:results].empty?
+    else
+      puts "no active memory: vector check only, no recall check"
+    end
   else
+    abort "host counted #{ENV["EXPECTED_EMBEDDED"]} embedded nodes but the app sees none" unless ENV["EXPECTED_EMBEDDED"] == "0"
     puts "no embedded memories: no embedding or recall check"
   end
 '
