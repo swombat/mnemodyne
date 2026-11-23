@@ -10,8 +10,9 @@
 #   mnemodyne-mira     mnemodyne-mira.swombat.io     (Mira)
 #   mnemodyne-sibling  mnemodyne-sibling.swombat.io  (the Gemini sibling, until they choose a name)
 # Secrets come from ~/.kamal/apps/<service>/env/roles/web.env (override with
-# ENV_FILE=); clear env is config/deploy.yml's, VOYAGE_MODEL overridable (default
-# voyage-4: a graph embedded with one model must be queried with the same one).
+# ENV_FILE=); clear env is config/deploy.yml's. VOYAGE_MODEL defaults to what the
+# running container uses (a graph embedded with one model must be queried with
+# the same one: Mira's is still voyage-3), and to voyage-4 for a new instance.
 # Touches <service>-web-* and the <service>-web proxy route only. The old
 # container is stopped, not removed. Rollback:
 #   docker start <old>; docker exec kamal-proxy kamal-proxy deploy <service>-web \
@@ -25,13 +26,16 @@ SERVICE="${1:-}"; HOST="${2:-}"; SHA="${3:-}"
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "full sha required"; exit 2; }
 ENV_FILE="${ENV_FILE:-$HOME/.kamal/apps/$SERVICE/env/roles/web.env}"
 [ -f "$ENV_FILE" ] || { echo "no env file at $ENV_FILE"; exit 2; }
-VOYAGE_MODEL="${VOYAGE_MODEL:-voyage-4}"
 # The proxy route must not already belong to another service's hostname.
 ROUTE=$(docker exec kamal-proxy kamal-proxy list 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | awk -v h="$HOST" '$2==h {print $1}')
 [ -z "$ROUTE" ] || [ "$ROUTE" = "$SERVICE-web" ] || { echo "$HOST is routed to $ROUTE, not $SERVICE-web"; exit 2; }
 
 OLD=$(docker ps --format '{{.Names}}' | grep "^$SERVICE-web-" | head -1 || true)
 NEW="$SERVICE-web-$SHA"; IMG="dtenner/mnemodyne:$SHA"
+if [ -z "${VOYAGE_MODEL:-}" ] && [ -n "$OLD" ]; then
+  VOYAGE_MODEL=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$OLD" | sed -n 's/^VOYAGE_EMBEDDING_MODEL=//p')
+fi
+VOYAGE_MODEL="${VOYAGE_MODEL:-voyage-4}"
 echo "service=$SERVICE host=$HOST old=${OLD:-none} new=$NEW model=$VOYAGE_MODEL"
 [ "$OLD" != "$NEW" ] || { echo "already running $NEW"; exit 2; }
 
